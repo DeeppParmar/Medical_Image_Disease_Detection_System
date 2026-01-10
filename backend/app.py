@@ -184,7 +184,7 @@ def analyze():
                 if tb_prob > 0.6:  # High TB confidence threshold
                     result = tb_predictor.predict_for_frontend(filepath)
                     os.remove(filepath)
-                    return jsonify(result)
+                    return jsonify(result)  # This is already an array
         except Exception as tb_error:
             app.logger.warning(f"TB model failed, falling back to CheXNet: {tb_error}")
         
@@ -195,7 +195,7 @@ def analyze():
         # Clean up uploaded file
         os.remove(filepath)
         
-        return jsonify(result)
+        return jsonify(result)  # This is already an array
     
     except Exception as e:
         # Clean up on error
