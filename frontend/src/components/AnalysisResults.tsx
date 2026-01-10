@@ -1,4 +1,4 @@
-import { AlertTriangle, CheckCircle, Activity, Target, Brain, Info } from "lucide-react";
+import { AlertTriangle, CheckCircle, Activity, Target, Brain, Info, Cpu } from "lucide-react";
 import { Progress } from "./ui/progress";
 
 export interface AnalysisResult {
@@ -12,6 +12,7 @@ export interface AnalysisResult {
 interface AnalysisResultsProps {
   results: AnalysisResult[] | null;
   isAnalyzing: boolean;
+  modelUsed?: string | null;
 }
 
 const statusConfig = {
@@ -38,7 +39,7 @@ const statusConfig = {
   },
 };
 
-const AnalysisResults = ({ results, isAnalyzing }: AnalysisResultsProps) => {
+const AnalysisResults = ({ results, isAnalyzing, modelUsed }: AnalysisResultsProps) => {
   if (isAnalyzing) {
     return (
       <div className="glass-card rounded-2xl p-8">
@@ -129,7 +130,7 @@ const AnalysisResults = ({ results, isAnalyzing }: AnalysisResultsProps) => {
       {results.slice(1).map((result, index) => {
         const resultConfig = statusConfig[result.status];
         const ResultIcon = resultConfig.icon;
-        
+
         return (
           <div key={index} className="glass-card rounded-xl p-4">
             <div className="flex items-center gap-3">

@@ -1,0 +1,102 @@
+﻿python : Traceback (most recent call last):
+At line:1 char:32
++ ... nv:PYTHONIOENCODING="utf-8"; python 
+verify_all_models.py 2>&1 | Out-F ...
++                                  
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Tra 
+   ceback (most recent call last)::String) [],   
+  RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  File "E:\github push files\Hackathon_DICT\backe
+nd\models\chexnet_inference.py", line 73, in 
+load_model
+    raise RuntimeError(f"CheXNet checkpoint 
+missing keys: {load_res.missing_keys[:10]}")
+RuntimeError: CheXNet checkpoint missing keys: ['
+densenet121.features.denseblock1.denselayer1.norm
+1.weight', 'densenet121.features.denseblock1.dens
+elayer1.norm1.bias', 'densenet121.features.denseb
+lock1.denselayer1.norm1.running_mean', 'densenet1
+21.features.denseblock1.denselayer1.norm1.running
+_var', 'densenet121.features.denseblock1.denselay
+er1.conv1.weight', 'densenet121.features.denseblo
+ck1.denselayer1.norm2.weight', 'densenet121.featu
+res.denseblock1.denselayer1.norm2.bias', 'densene
+t121.features.denseblock1.denselayer1.norm2.runni
+ng_mean', 'densenet121.features.denseblock1.dense
+layer1.norm2.running_var', 'densenet121.features.
+denseblock1.denselayer1.conv2.weight']
+2026-01-10 12:13:03.044567: E 
+tensorflow/core/framework/node_def_util.cc:676] 
+NodeDef mentions attribute debug_name which is 
+not in the op definition: Op<name=VarHandleOp; 
+signature= -> resource:resource; 
+attr=container:string,default=""; 
+attr=shared_name:string,default=""; 
+attr=dtype:type; attr=shape:shape; 
+attr=allowed_devices:list(string),default=[]; 
+is_stateful=true> This may be expected if your 
+graph generating binary is newer  than this 
+binary. Unknown attributes will be ignored. 
+NodeDef: {{node feature_extraction/Variable}}
+============================================================
+Medical Image Analysis - Model Verification
+============================================================
+
+============================================================
+1. Model Checkpoint Files
+============================================================
+  Γ£à CheXNet: PyTorch (80.3 MB)
+  Γ£à MURA (DenseNet): PyTorch (48.5 MB)
+  Γ£à TuberculosisNet: TensorFlow
+
+============================================================
+2. Dataset Images
+============================================================
+  Γ£à CheXNet (ChestX-ray14): 11 images
+  ΓÜá∩╕Å MURA (Wrist X-rays): Directory exists but empty
+  Γ£à TB - Normal: 3500 images
+  Γ£à TB - Tuberculosis: 700 images
+
+============================================================
+3. Dependencies
+============================================================
+  Γ£à PyTorch (CheXNet, MURA)
+  Γ£à TorchVision
+  Γ£à TensorFlow (TB-Net)
+  Γ£à OpenCV
+  Γ£à NumPy
+  Γ£à Pillow
+  Γ£à Flask (API)
+
+============================================================
+4. Model Inference Tests
+============================================================
+  Using test image: Normal-1.png
+
+  Testing CheXNet...
+Error loading CheXNet model: CheXNet checkpoint missing keys: ['densenet121.features.denseblock1.denselayer1.norm1.weight', 'densenet121.features.denseblock1.denselayer1.norm1.bias', 'densenet121.features.denseblock1.denselayer1.norm1.running_mean', 'densenet121.features.denseblock1.denselayer1.norm1.running_var', 'densenet121.features.denseblock1.denselayer1.conv1.weight', 'densenet121.features.denseblock1.denselayer1.norm2.weight', 'densenet121.features.denseblock1.denselayer1.norm2.bias', 'densenet121.features.denseblock1.denselayer1.norm2.running_mean', 'densenet121.features.denseblock1.denselayer1.norm2.running_var', 'densenet121.features.denseblock1.denselayer1.conv2.weight']
+    Γ¥î CheXNet failed: CheXNet checkpoint missing keys: ['densenet121.features.denseblock1.denselayer1.norm1.weight', 'densenet121.features.denseblock1.denselayer1.norm1.bias', 'densenet121.features.denseblock1.denselayer1.norm1.running_mean', 'densenet121.features.denseblock1.denselayer1.norm1.running_var', 'densenet121.features.denseblock1.denselayer1.conv1.weight', 'densenet121.features.denseblock1.denselayer1.norm2.weight', 'densenet121.features.denseblock1.denselayer1.norm2.bias', 'densenet121.features.denseblock1.denselayer1.norm2.running_mean', 'densenet121.features.denseblock1.denselayer1.norm2.running_var', 'densenet121.features.denseblock1.denselayer1.conv2.weight']
+
+  Testing MURA (Bone X-ray)...
+Loaded MURA model from E:\github push files\Hackathon_DICT\backend\models\..\datasets\DenseNet-MURA\models\XR_WRIST\model.pth
+    Γ£à MURA model loaded! (Load: 0.2s)
+
+  Testing TuberculosisNet...
+Error loading Tuberculosis model: "The name 'resnet_model/final_dense:0' refers to a Tensor which does not exist. The operation, 'resnet_model/final_dense', does not exist in the graph."
+    Γ£à TuberculosisNet working! (Load: 0.1s, Inference: 0.00s)
+
+============================================================
+SUMMARY
+============================================================
+
+Core Models Ready for Real-time Inference:
+  Γ¥î Not Ready - CheXNet (14 diseases)
+  Γ£à Ready - MURA (Bone abnormality)
+  Γ£à Ready - TuberculosisNet (TB)
+
+============================================================
+ΓÜá∩╕Å  Some models need attention (see above)
+============================================================
