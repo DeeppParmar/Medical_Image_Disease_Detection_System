@@ -20,11 +20,6 @@ const Header = () => {
           </div>
 
           <div className="flex items-center gap-3 md:gap-6">
-            <div className="hidden md:flex items-center gap-4 lg:gap-6 text-sm font-medium text-muted-foreground">
-              <a href="#analyze" className="hover:text-primary transition-colors">Analyze</a>
-              <a href="#features" className="hover:text-primary transition-colors">Features</a>
-            </div>
-            <div className="h-4 w-px bg-border/50 hidden md:block" />
             <div className="flex items-center gap-2">
               <span className="px-2 md:px-3 py-1 rounded-full bg-primary/10 text-primary text-[10px] md:text-xs font-bold border border-primary/20">
                 BETA
