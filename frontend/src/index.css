@@ -114,6 +114,10 @@
     animation: scan 2s ease-in-out infinite;
   }
 
+  .animate-glitch {
+    animation: glitch 3s infinite;
+  }
+
   @keyframes float {
     0%, 100% { transform: translateY(0px); }
     50% { transform: translateY(-10px); }
@@ -129,9 +133,44 @@
     100% { background-position: 200% 0; }
   }
 
+  @keyframes glitch {
+    0%, 100% { transform: translate(0); }
+    20% { transform: translate(-2px, 2px); }
+    40% { transform: translate(-2px, -2px); }
+    60% { transform: translate(2px, 2px); }
+    80% { transform: translate(2px, -2px); }
+  }
+
   .animate-shimmer {
     background: linear-gradient(90deg, transparent, hsl(175 80% 45% / 0.1), transparent);
     background-size: 200% 100%;
     animation: shimmer 2s infinite;
+  }
+
+  /* Hackathon Style Effects */
+  .hackathon-shadow {
+    box-shadow: 
+      0 0 15px hsl(175 80% 45% / 0.15),
+      0 0 30px hsl(195 80% 45% / 0.1),
+      0 4px 24px hsl(222 47% 2% / 0.5);
+  }
+
+  .retro-border {
+    position: relative;
+  }
+
+  .retro-border::before {
+    content: '';
+    position: absolute;
+    inset: -2px;
+    background: linear-gradient(45deg, hsl(175 80% 45%), hsl(195 80% 45%), hsl(175 80% 45%));
+    border-radius: inherit;
+    opacity: 0;
+    transition: opacity 0.3s;
+    z-index: -1;
+  }
+
+  .retro-border:hover::before {
+    opacity: 0.3;
   }
 }
