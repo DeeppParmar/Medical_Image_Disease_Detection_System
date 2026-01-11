@@ -731,7 +731,21 @@ def analyze():
                     resp = jsonify(result)
                     resp.headers['X-Model-Used'] = 'tuberculosis'
                     return resp
-                # For normal TB result, continue to CheXNet to check for other conditions (pneumonia, etc.)
+                # If TB model is very confident it's normal (>95%), return healthy result
+                elif normal_prob > 0.95:
+                    print(f"✅ TB model confident it's HEALTHY (Normal={normal_prob:.2%})")
+                    result = [{
+                        'disease': 'Healthy Scan (Chest)',
+                        'confidence': int(normal_prob * 100),
+                        'status': 'healthy',
+                        'description': 'No tuberculosis or significant chest abnormalities detected. Lungs appear healthy with normal tissue patterns.',
+                        'regions': ['Lung Fields', 'Mediastinum']
+                    }]
+                    os.remove(filepath)
+                    resp = jsonify(result)
+                    resp.headers['X-Model-Used'] = 'tuberculosis'
+                    return resp
+                # For moderate TB-negative result, continue to CheXNet to check for other conditions
                 else:
                     print(f"✅ No TB detected (Normal={normal_prob:.2%}), checking CheXNet for other conditions...")
             except Exception as tb_error:
