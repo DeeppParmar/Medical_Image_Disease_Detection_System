@@ -27,14 +27,18 @@ wheels/
 instance/
 .webassets-cache
 
-# Uploads
-uploads/
-*.jpg
-*.jpeg
-*.png
-*.dcm
+# Uploads (keep folder, ignore contents)
+uploads/*
+!uploads/.gitkeep
 
-# Models
+# Data folders (large datasets)
+data/
+datasets/TuberculosisNet/data/
+datasets/TuberculosisNet/Dataset/
+datasets/CheXNet/ChestX-ray14/
+datasets/DenseNet-MURA/MURA/
+
+# Model checkpoints (large files)
 *.pth
 *.pth.tar
 *.h5
@@ -43,11 +47,11 @@ uploads/
 *.meta
 *.index
 *.data-*
+checkpoints/
 
-# Data
-datasets/*/data/
-datasets/*/images/
-datasets/*/masks/
+# Keep essential model files
+!datasets/CheXNet/model.pth.tar
+!datasets/DenseNet-MURA/models/
 datasets/*/train/
 datasets/*/test/
 datasets/*/val/

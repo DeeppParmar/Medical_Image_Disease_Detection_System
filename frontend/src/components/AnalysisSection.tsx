@@ -29,62 +29,24 @@ const AnalysisSection = () => {
       // Auto-detect model based on filename
       const name = file.name.toLowerCase();
       const isDicom = name.endsWith('.dcm');
-      const boneKeywords = ['wrist', 'hand', 'elbow', 'shoulder', 'humerus', 'finger', 'forearm', 'ankle', 'foot', 'knee', 'hip', 'bone', 'mura'];
+      const boneKeywords = ['wrist', 'hand', 'elbow', 'shoulder', 'humerus', 'finger', 'forearm', 'ankle', 'foot', 'knee', 'hip', 'bone', 'mura', 'fracture'];
       const isBone = boneKeywords.some((k) => name.includes(k));
       const tbKeywords = ['tb', 'tuberculosis'];
       const isTB = tbKeywords.some((k) => name.includes(k));
 
+      // Set appropriate scan_type and model based on filename hints
       if (isDicom) {
         formData.append('model', 'rsna');
+        formData.append('scan_type', 'ct');
       } else if (isBone) {
         formData.append('scan_type', 'bone');
+        formData.append('model', 'mura');
       } else if (isTB) {
         formData.append('scan_type', 'chest');
         formData.append('model', 'tuberculosis');
       } else {
-        // Default: Run all models for best detection
-        const models = ['chexnet', 'mura', 'tuberculosis'];
-        const allResults: AnalysisResult[] = [];
-        
-        for (const model of models) {
-          const modelFormData = new FormData();
-          modelFormData.append('image', file);
-          
-          if (model === 'tuberculosis') {
-            modelFormData.append('scan_type', 'chest');
-            modelFormData.append('model', 'tuberculosis');
-          } else if (model === 'mura') {
-            modelFormData.append('scan_type', 'bone');
-          } else if (model === 'chexnet') {
-            modelFormData.append('scan_type', 'chest');
-          }
-          
-          try {
-            const response = await fetch(API_ENDPOINTS.ANALYZE, {
-              method: 'POST',
-              body: modelFormData
-            });
-            
-            const data = await response.json().catch(() => null);
-            if (Array.isArray(data)) {
-              allResults.push(...data);
-            }
-          } catch (modelError) {
-            console.error(`Error running ${model}:`, modelError);
-          }
-        }
-        
-        const endTime = Date.now();
-        setProcessingTime(endTime - startTime);
-        setModelUsed('Auto-Detect (Combined)');
-        setResults(allResults.length > 0 ? allResults : [{
-          disease: 'Analysis Complete',
-          confidence: 95,
-          status: 'healthy',
-          description: 'All models completed but no significant findings detected.'
-        }]);
-        setIsAnalyzing(false);
-        return;
+        // Default: let backend auto-detect (will try TB then CheXNet for chest X-rays)
+        formData.append('scan_type', 'auto');
       }
 
       const response = await fetch(API_ENDPOINTS.ANALYZE, {

@@ -1,4 +1,4 @@
-import { AlertTriangle, CheckCircle, Activity, Target, Brain, Info, Cpu } from "lucide-react";
+import { AlertTriangle, CheckCircle, Activity, Target, Brain, Info, Cpu, Bone, Heart, Stethoscope } from "lucide-react";
 import { Progress } from "./ui/progress";
 
 export interface AnalysisResult {
@@ -7,6 +7,7 @@ export interface AnalysisResult {
   status: 'healthy' | 'warning' | 'critical';
   description: string;
   regions?: string[];
+  enhanced_detection?: boolean;
 }
 
 interface AnalysisResultsProps {
@@ -14,6 +15,34 @@ interface AnalysisResultsProps {
   isAnalyzing: boolean;
   modelUsed?: string | null;
 }
+
+// Model-specific configurations
+const modelConfig: Record<string, { icon: any; color: string; title: string; subtitle: string }> = {
+  'CheXNet': {
+    icon: Heart,
+    color: 'text-red-500',
+    title: 'Chest X-Ray Analysis',
+    subtitle: '14-disease detection model'
+  },
+  'TuberculosisNet': {
+    icon: Stethoscope,
+    color: 'text-orange-500',
+    title: 'Tuberculosis Screening',
+    subtitle: 'TB-specific detection model'
+  },
+  'MURA': {
+    icon: Bone,
+    color: 'text-blue-500',
+    title: 'Bone X-Ray Analysis',
+    subtitle: 'Musculoskeletal abnormality detection'
+  },
+  'RSNA': {
+    icon: Brain,
+    color: 'text-purple-500',
+    title: 'Brain CT Analysis',
+    subtitle: 'Intracranial hemorrhage detection'
+  }
+};
 
 const statusConfig = {
   healthy: {
@@ -40,6 +69,10 @@ const statusConfig = {
 };
 
 const AnalysisResults = ({ results, isAnalyzing, modelUsed }: AnalysisResultsProps) => {
+  // Get model-specific config
+  const currentModelConfig = modelUsed ? modelConfig[modelUsed] : null;
+  const ModelIcon = currentModelConfig?.icon || Brain;
+
   if (isAnalyzing) {
     return (
       <div className="glass-card rounded-xl md:rounded-2xl p-6 md:p-8 shadow-xl">
@@ -84,6 +117,19 @@ const AnalysisResults = ({ results, isAnalyzing, modelUsed }: AnalysisResultsPro
 
   return (
     <div className="space-y-3 md:space-y-4">
+      {/* Model Header */}
+      {currentModelConfig && (
+        <div className="flex items-center gap-3 px-2 mb-2">
+          <div className={`p-2 rounded-lg bg-primary/10`}>
+            <ModelIcon className={`w-5 h-5 ${currentModelConfig.color}`} />
+          </div>
+          <div>
+            <h3 className="font-semibold text-sm">{currentModelConfig.title}</h3>
+            <p className="text-xs text-muted-foreground">{currentModelConfig.subtitle}</p>
+          </div>
+        </div>
+      )}
+      
       <div className={`glass-card rounded-xl md:rounded-2xl p-4 md:p-6 border ${config.borderColor} shadow-xl`}>
         <div className="flex items-start gap-3 md:gap-4 mb-4 md:mb-6">
           <div className={`p-2.5 md:p-3 rounded-xl ${config.bgColor} shrink-0`}>
