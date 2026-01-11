@@ -96,13 +96,17 @@ def model_checkpoint_available(model_name: str) -> bool:
         return os.path.isfile(os.path.join(base, 'CheXNet', 'model.pth.tar'))
     
     if model_name == 'mura':
+        # MURA model now uses ImageNet pretrained weights, always available
+        # Can also check for fine-tuned model
         mura_models = os.path.join(base, 'DenseNet-MURA', 'models')
-        if not os.path.isdir(mura_models):
-            return False
-        for root, _, files in os.walk(mura_models):
-            if 'model.pth' in files:
-                return True
-        return False
+        has_finetuned = False
+        if os.path.isdir(mura_models):
+            for root, _, files in os.walk(mura_models):
+                if 'model.pth' in files:
+                    has_finetuned = True
+                    break
+        # Always return True since we use ImageNet pretrained backbone
+        return True
     
     if model_name == 'tuberculosis':
         # First check for PyTorch model (preferred)
@@ -731,23 +735,9 @@ def analyze():
                     resp = jsonify(result)
                     resp.headers['X-Model-Used'] = 'tuberculosis'
                     return resp
-                # If TB model is very confident it's normal (>95%), return healthy result
-                elif normal_prob > 0.95:
-                    print(f"✅ TB model confident it's HEALTHY (Normal={normal_prob:.2%})")
-                    result = [{
-                        'disease': 'Healthy Scan (Chest)',
-                        'confidence': int(normal_prob * 100),
-                        'status': 'healthy',
-                        'description': 'No tuberculosis or significant chest abnormalities detected. Lungs appear healthy with normal tissue patterns.',
-                        'regions': ['Lung Fields', 'Mediastinum']
-                    }]
-                    os.remove(filepath)
-                    resp = jsonify(result)
-                    resp.headers['X-Model-Used'] = 'tuberculosis'
-                    return resp
-                # For moderate TB-negative result, continue to CheXNet to check for other conditions
-                else:
-                    print(f"✅ No TB detected (Normal={normal_prob:.2%}), checking CheXNet for other conditions...")
+                
+                # Continue to CheXNet for other conditions even if TB is negative
+                print(f"✅ No TB detected (Normal={normal_prob:.2%}), checking CheXNet for other conditions...")
             except Exception as tb_error:
                 print(f"⚠️ TB model check failed: {tb_error}")
                 app.logger.warning(f"TB model failed, falling back to CheXNet: {tb_error}")
