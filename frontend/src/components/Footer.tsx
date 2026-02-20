@@ -19,7 +19,7 @@ const Footer = () => {
 
           {/* Built with */}
           <p className="text-xs md:text-sm text-muted-foreground flex items-center gap-1.5 justify-center flex-wrap">
-            Built with <Heart className="w-3 h-3 text-destructive fill-destructive animate-pulse" /> at DICT Hackathon
+            Built with <Heart className="w-3 h-3 text-destructive fill-destructive animate-pulse" />
           </p>
 
           {/* Bottom row */}
