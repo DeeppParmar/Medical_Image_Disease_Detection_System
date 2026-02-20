@@ -23,13 +23,23 @@ from models.rsna_inference import RSNPredictor
 from models.unet_inference import UNetPredictor
 
 app = Flask(__name__)
-# CORS for frontend
-CORS(app, origins=["http://localhost:8080", "http://127.0.0.1:8080", "http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:8081", "http://127.0.0.1:8081"], 
-     supports_credentials=True, 
+
+# Dynamic CORS origins — includes local dev + deployed frontend URL from env
+_local_origins = [
+    "http://localhost:8080", "http://127.0.0.1:8080",
+    "http://localhost:5173", "http://127.0.0.1:5173",
+    "http://localhost:8081", "http://127.0.0.1:8081",
+]
+_frontend_url = os.environ.get("FRONTEND_URL", "").strip()
+if _frontend_url:
+    _local_origins.append(_frontend_url)
+
+CORS(app, origins=_local_origins,
+     supports_credentials=True,
      expose_headers=["X-Model-Used"])
 
 # Initialize SocketIO for real-time communication
-socketio = SocketIO(app, cors_allowed_origins=["http://localhost:8080", "http://127.0.0.1:8080", "http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:8081", "http://127.0.0.1:8081"], 
+socketio = SocketIO(app, cors_allowed_origins=_local_origins,
                     async_mode='threading')
 
 # Configuration
@@ -856,10 +866,11 @@ def predict_all():
         }), 500
 
 if __name__ == '__main__':
+    port = int(os.environ.get("PORT", 5000))
     print("Starting Early Disease Detection API...")
     print("Available models: chexnet, mura, tuberculosis, rsna, unet")
     print("Frontend endpoint: /api/analyze")
-    print("Backend running on: http://0.0.0.0:5000")
-    print("CORS enabled for: http://localhost:8080")
-    app.run(debug=True, host='0.0.0.0', port=5000, use_reloader=False)
+    print(f"Backend running on: http://0.0.0.0:{port}")
+    print(f"CORS enabled for: {_local_origins}")
+    app.run(debug=True, host='0.0.0.0', port=port, use_reloader=False)
 

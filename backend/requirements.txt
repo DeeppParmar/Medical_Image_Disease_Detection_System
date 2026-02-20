@@ -13,3 +13,4 @@ requests==2.31.0
 Werkzeug==2.3.7
 tensorflow==2.13.0
 pydicom==2.4.4
+gunicorn==21.2.0
