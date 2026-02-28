@@ -48,7 +48,6 @@ SMOOTH_KSIZE = 21        # Gaussian kernel for CAM smoothing (odd number)
 SMOOTH_SIGMA = 7         # Gaussian sigma for smooth gradients
 LUNG_MASK_THRESH = 25    # Intensity threshold for lung mask generation
 LUNG_MASK_BLUR = 25      # Gaussian blur kernel for soft lung mask edges
-CENTER_BIAS_RATIO = 0.42 # Radius ratio for elliptical center focus
 SOFT_THRESH_POWER = 3.0  # Power for soft thresholding (higher = sharper)
 SOFT_THRESH_KNEE = 0.35  # Knee point: below this, activations fade rapidly
 MIN_CONTOUR_AREA = 500   # Minimum pixel area for region bounding boxes
@@ -56,6 +55,9 @@ MAX_REGIONS = 3          # Maximum number of bounding-box regions to show
 BBOX_THICKNESS = 2       # Bounding box line thickness
 ASYMMETRY_BOOST = 0.15   # Boost factor for dominant-side emphasis
 CONTOUR_NOISE_AREA = 300 # Remove activation blobs smaller than this
+PERCENTILE_CUTOFF = 75   # Keep only top 25% activations
+SPREAD_POWER = 2.5       # Power compression to crush low values
+EDGE_DECAY_SIGMA_RATIO = 1/3  # Gaussian edge decay width ratio
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -211,26 +213,20 @@ def _generate_lung_mask(orig_img):
     return mask
 
 
-def _apply_center_focus(heatmap, ratio=CENTER_BIAS_RATIO):
+def _apply_edge_decay(heatmap, sigma_ratio=EDGE_DECAY_SIGMA_RATIO):
     """
-    Apply an elliptical center bias to suppress border/corner noise.
+    Apply smooth Gaussian edge decay to prevent full-lung highlighting.
 
-    Uses a smoothly-faded ellipse rather than a hard circle, so the
-    transition from focused to suppressed is natural.
+    Uses a 2D Gaussian centered on the image to naturally attenuate
+    activations near the borders. Unlike a hard elliptical mask, this
+    produces a continuous falloff that looks natural.
     """
     h, w = heatmap.shape
-    center_mask = np.zeros((h, w), dtype=np.float32)
-
-    # Elliptical shape: wider horizontally (lungs are side by side)
-    axes = (int(w * ratio), int(h * ratio * 0.85))
-    cv2.ellipse(center_mask, (w // 2, h // 2), axes, 0, 0, 360, 1.0, -1)
-
-    # Smooth the edges with heavy blur
-    center_mask = cv2.GaussianBlur(center_mask, (51, 51), 0)
-    cmax = center_mask.max()
-    if cmax > 1e-8:
-        center_mask = center_mask / cmax
-
+    y, x = np.ogrid[:h, :w]
+    sigma = w * sigma_ratio
+    center_mask = np.exp(
+        -((x - w / 2) ** 2 + (y - h / 2) ** 2) / (2 * sigma ** 2)
+    ).astype(np.float32)
     return heatmap * center_mask
 
 
@@ -288,19 +284,72 @@ def _break_symmetry(cam):
     return cam
 
 
+def _limit_active_area(cam, percentile=PERCENTILE_CUTOFF):
+    """
+    Keep only the top activations by percentile cutoff.
+
+    E.g. percentile=75 keeps only the top 25% of activation values,
+    removing the diffuse "full lung glow" effect.
+    """
+    thresh = np.percentile(cam, percentile)
+    cam = cam * (cam >= thresh).astype(np.float32)
+    return cam
+
+
+def _isolate_top_regions(cam, max_blobs=MAX_REGIONS):
+    """
+    Multi-region separation: keep only the top N largest contour blobs.
+
+    Converts to binary at 0.6 threshold, finds contours, sorts by area,
+    keeps only the top max_blobs. Multiplies the mask back with the
+    original smooth CAM to preserve gradient detail within kept regions.
+    """
+    cam_binary = (cam > 0.3).astype(np.uint8)
+    contours, _ = cv2.findContours(cam_binary, cv2.RETR_EXTERNAL,
+                                   cv2.CHAIN_APPROX_SIMPLE)
+
+    # Sort by area, keep top N
+    contours = sorted(contours, key=cv2.contourArea, reverse=True)[:max_blobs]
+
+    mask = np.zeros_like(cam, dtype=np.float32)
+    for cnt in contours:
+        cv2.drawContours(mask, [cnt], -1, 1.0, -1)
+
+    # Smooth the mask edges to avoid hard cutoffs
+    mask = cv2.GaussianBlur(mask, (15, 15), 0)
+    mask_max = mask.max()
+    if mask_max > 1e-8:
+        mask = mask / mask_max
+
+    return cam * mask
+
+
+def _compress_spread(cam, power=SPREAD_POWER):
+    """
+    Power compression to reduce over-spread.
+
+    Raising to power 2.5 crushes low values aggressively while keeping
+    strong peaks intact. This transforms diffuse glow into focused spots.
+    """
+    return np.power(cam, power)
+
+
 def _postprocess_cam(cam, target_h, target_w, orig_img=None):
     """
     Full research-grade post-processing pipeline.
 
     Pipeline order:
-      1. Upscale to full resolution (bicubic)
-      2. Gaussian smoothing (remove pixelation)
-      3. Soft threshold (preserve gradients, suppress noise)
-      4. Lung mask (restrict to chest region)
-      5. Center focus (suppress border noise)
-      6. Remove small blobs (contour filtering)
-      7. Break symmetry (realistic asymmetry)
-      8. Final smooth + normalize
+      1.  Upscale to full resolution (bicubic)
+      2.  Gaussian smoothing (remove pixelation)
+      3.  Soft threshold (sigmoid gate, preserve gradients)
+      4.  Lung mask (restrict to chest region)
+      5.  Percentile cutoff (keep top 25% activations only)
+      6.  Power compression (crush low spread, power 2.5)
+      7.  Multi-region isolation (keep top 3 blobs only)
+      8.  Edge decay (Gaussian falloff from center)
+      9.  Remove small noise blobs (contour filter)
+      10. Break unrealistic symmetry
+      11. Final Gaussian smooth + normalize
     """
     # 1. Upscale to original image dimensions
     cam = cv2.resize(cam, (target_w, target_h), interpolation=cv2.INTER_CUBIC)
@@ -317,18 +366,31 @@ def _postprocess_cam(cam, target_h, target_w, orig_img=None):
     if orig_img is not None:
         lung_mask = _generate_lung_mask(orig_img)
         cam = cam * lung_mask
+        cam = _normalize(cam)
 
-    # 5. Center focus — suppress corner/border noise
-    cam = _apply_center_focus(cam)
+    # 5. Percentile cutoff — keep only top 25% activations
+    cam = _limit_active_area(cam)
+    cam = _normalize(cam)
 
-    # 6. Remove small disconnected blobs
+    # 6. Power compression — crush diffuse spread
+    cam = _compress_spread(cam)
+    cam = _normalize(cam)
+
+    # 7. Multi-region isolation — keep top 3 strongest blobs
+    cam = _isolate_top_regions(cam)
+    cam = _normalize(cam)
+
+    # 8. Gaussian edge decay — suppress border activations  
+    cam = _apply_edge_decay(cam)
+
+    # 9. Remove small disconnected blobs
     cam = _remove_small_blobs(cam)
 
-    # 7. Break unrealistic symmetry
+    # 10. Break unrealistic symmetry
     cam = _break_symmetry(cam)
 
-    # 8. Final smooth pass + normalize for clean output
-    cam = cv2.GaussianBlur(cam, (11, 11), 3)
+    # 11. Final smooth pass + normalize for clean output
+    cam = cv2.GaussianBlur(cam, (21, 21), 0)
     cam = _normalize(cam)
 
     return cam
