@@ -31,7 +31,7 @@ from models.mura_inference import MURAPredictor
 from models.tuberculosis_inference import TuberculosisPredictor
 from models.rsna_inference import RSNPredictor
 from models.unet_inference import UNetPredictor
-from models.gradcam import generate_gradcam
+from models.gradcam import generate_gradcam, generate_gradcam_full
 
 app = Flask(__name__)
 
@@ -561,7 +561,7 @@ def predict(model_name):
             'traceback': traceback.format_exc()
         }), 500
 
-# ── Grad-CAM target layer mapping per model ──────────────────────────
+# ── Grad-CAM++ target layer mapping per model ─────────────────────────
 GRADCAM_LAYERS = {
     'chexnet':      'densenet121.features.denseblock4',
     'tuberculosis': 'backbone.features.denseblock4',
@@ -571,10 +571,11 @@ GRADCAM_LAYERS = {
 
 def _attach_heatmap(result_list, filepath, model_name, predictor):
     """
-    Attempt to generate a Grad-CAM heatmap and attach it to result_list[0].
+    Attempt to generate a Grad-CAM++ heatmap and attach views to result_list[0].
+    Attaches: heatmap (overlay), heatmap_threshold, heatmap_bbox, heatmap_regions.
     Gracefully sets heatmap=None when generation is not possible.
     """
-    heatmap = None
+    heatmap_data = None
     try:
         layer = GRADCAM_LAYERS.get(model_name)
         torch_model = None
@@ -596,13 +597,22 @@ def _attach_heatmap(result_list, filepath, model_name, predictor):
             device = predictor.device
 
         if torch_model is not None and layer is not None:
-            heatmap = generate_gradcam(filepath, torch_model, layer, device=device,
-                                       preprocess_fn=preprocess_fn)
+            heatmap_data = generate_gradcam_full(filepath, torch_model, layer,
+                                                  device=device, preprocess_fn=preprocess_fn)
     except Exception as hm_err:
-        logger.error(f"[GRADCAM] Heatmap generation failed for {model_name}: {hm_err}")
+        logger.error(f"[GRADCAM++] Heatmap generation failed for {model_name}: {hm_err}")
 
     if result_list and isinstance(result_list, list) and len(result_list) > 0:
-        result_list[0]['heatmap'] = heatmap
+        if heatmap_data:
+            result_list[0]['heatmap'] = heatmap_data.get('overlay')
+            result_list[0]['heatmap_threshold'] = heatmap_data.get('threshold')
+            result_list[0]['heatmap_bbox'] = heatmap_data.get('bbox')
+            result_list[0]['heatmap_regions'] = heatmap_data.get('regions', [])
+        else:
+            result_list[0]['heatmap'] = None
+            result_list[0]['heatmap_threshold'] = None
+            result_list[0]['heatmap_bbox'] = None
+            result_list[0]['heatmap_regions'] = []
     return result_list
 
 

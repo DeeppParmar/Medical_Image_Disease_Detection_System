@@ -1,10 +1,18 @@
 import { useState } from "react";
-import { AlertTriangle, CheckCircle, Activity, Target, Brain, Info, Cpu, Bone, Heart, Stethoscope, ServerCrash, ScanLine, XCircle, Eye, EyeOff } from "lucide-react";
+import { AlertTriangle, CheckCircle, Activity, Target, Brain, Info, Cpu, Bone, Heart, Stethoscope, ServerCrash, ScanLine, XCircle, Eye, Crosshair, Box, Layers } from "lucide-react";
 import { Progress } from "./ui/progress";
 import { Alert, AlertTitle, AlertDescription } from "./ui/alert";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./ui/tooltip";
+
+export interface HeatmapRegion {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  intensity: number;
+}
 
 export interface AnalysisResult {
   disease: string;
@@ -14,6 +22,9 @@ export interface AnalysisResult {
   regions?: string[];
   enhanced_detection?: boolean;
   heatmap?: string | null;
+  heatmap_threshold?: string | null;
+  heatmap_bbox?: string | null;
+  heatmap_regions?: HeatmapRegion[];
   warnings?: string[];
 }
 
@@ -114,7 +125,8 @@ const errorCardConfig: Record<string, { icon: React.ComponentType<React.SVGProps
 };
 
 const AnalysisResults = ({ results, isAnalyzing, modelUsed, errorState, onReset, uploadedImageUrl }: AnalysisResultsProps) => {
-  const [showHeatmap, setShowHeatmap] = useState(false);
+  // Heatmap view mode: 0=original, 1=overlay, 2=threshold, 3=bbox
+  const [heatmapMode, setHeatmapMode] = useState(0);
 
   // Get model-specific config
   const currentModelConfig = modelUsed ? modelConfig[modelUsed] : null;
@@ -216,8 +228,8 @@ const AnalysisResults = ({ results, isAnalyzing, modelUsed, errorState, onReset,
         </div>
       )}
 
-      {/* ── Feature 1 — Grad-CAM Heatmap ───────────────────────────── */}
-      {heatmapSrc && uploadedImageUrl && (
+      {/* ── Grad-CAM++ Multi-View Heatmap ─────────────────────────── */}
+      {(heatmapSrc || primaryResult.heatmap_threshold || primaryResult.heatmap_bbox) && uploadedImageUrl && (
         <div
           className="rounded-xl md:rounded-2xl overflow-hidden shadow-lg"
           style={{
@@ -227,33 +239,57 @@ const AnalysisResults = ({ results, isAnalyzing, modelUsed, errorState, onReset,
             backgroundOrigin: 'border-box',
           }}
         >
-          <div className="relative aspect-square max-h-[280px] bg-black">
+          <div className="relative aspect-square max-h-[320px] bg-black">
             <img
-              src={showHeatmap ? `data:image/png;base64,${heatmapSrc}` : uploadedImageUrl}
-              alt={showHeatmap ? "Grad-CAM heatmap overlay" : "Original image"}
+              src={
+                heatmapMode === 0 ? uploadedImageUrl :
+                  heatmapMode === 1 ? `data:image/png;base64,${heatmapSrc}` :
+                    heatmapMode === 2 ? `data:image/png;base64,${primaryResult.heatmap_threshold}` :
+                      `data:image/png;base64,${primaryResult.heatmap_bbox}`
+              }
+              alt={
+                heatmapMode === 0 ? 'Original image' :
+                  heatmapMode === 1 ? 'Grad-CAM++ heatmap overlay' :
+                    heatmapMode === 2 ? 'Threshold highlight view' :
+                      'Bounding box view'
+              }
               className="w-full h-full object-contain"
             />
+            {/* Mode indicator badge */}
+            <div className="absolute top-2 right-2 px-2 py-1 rounded-md bg-black/70 text-[10px] text-white font-medium">
+              {heatmapMode === 0 ? 'Original' : heatmapMode === 1 ? 'AI Attention' : heatmapMode === 2 ? 'Highlight' : 'Regions'}
+            </div>
           </div>
-          <div className="flex items-center justify-between p-3 bg-card/80 border-t border-border/50">
-            <Button
-              variant="outline"
-              size="sm"
-              className="rounded-lg text-xs gap-1.5"
-              onClick={() => setShowHeatmap(!showHeatmap)}
-            >
-              {showHeatmap ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-              {showHeatmap ? 'Show Original' : 'Show Heatmap'}
-            </Button>
+          <div className="flex items-center justify-between gap-2 p-3 bg-card/80 border-t border-border/50">
+            {/* View mode buttons */}
+            <div className="flex gap-1">
+              <Button variant={heatmapMode === 0 ? 'default' : 'outline'} size="sm" className="rounded-lg text-[10px] md:text-xs h-7 px-2 gap-1" onClick={() => setHeatmapMode(0)}>
+                <Eye className="w-3 h-3" /> Original
+              </Button>
+              <Button variant={heatmapMode === 1 ? 'default' : 'outline'} size="sm" className="rounded-lg text-[10px] md:text-xs h-7 px-2 gap-1" onClick={() => setHeatmapMode(1)}>
+                <Layers className="w-3 h-3" /> Heatmap
+              </Button>
+              {primaryResult.heatmap_threshold && (
+                <Button variant={heatmapMode === 2 ? 'default' : 'outline'} size="sm" className="rounded-lg text-[10px] md:text-xs h-7 px-2 gap-1" onClick={() => setHeatmapMode(2)}>
+                  <Crosshair className="w-3 h-3" /> Focus
+                </Button>
+              )}
+              {primaryResult.heatmap_bbox && (
+                <Button variant={heatmapMode === 3 ? 'default' : 'outline'} size="sm" className="rounded-lg text-[10px] md:text-xs h-7 px-2 gap-1" onClick={() => setHeatmapMode(3)}>
+                  <Box className="w-3 h-3" /> Regions
+                </Button>
+              )}
+            </div>
             <TooltipProvider>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <div className="flex items-center gap-1.5 text-[10px] md:text-xs text-muted-foreground cursor-help">
                     <Info className="w-3 h-3" />
-                    <span>AI Attention Map</span>
+                    <span>Grad-CAM++</span>
                   </div>
                 </TooltipTrigger>
-                <TooltipContent side="top" className="max-w-[200px] text-xs">
-                  Red regions indicate areas the AI focused on most
+                <TooltipContent side="top" className="max-w-[220px] text-xs">
+                  Grad-CAM++ highlights regions the AI focused on. Red/warm = high attention. Toggle views to see different perspectives.
                 </TooltipContent>
               </Tooltip>
             </TooltipProvider>
