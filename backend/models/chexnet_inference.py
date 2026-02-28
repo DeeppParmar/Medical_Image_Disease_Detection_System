@@ -279,11 +279,15 @@ class CheXNetPredictor:
             detected_above_threshold = [d for d, prob in sorted_diseases if prob > 0.5]
             
             if not detected_above_threshold:
+                healthy_conf = (1.0 - sorted_diseases[0][1]) if sorted_diseases else 0.95
+                healthy_desc = 'No significant abnormalities detected. Lung fields appear clear. Normal cardiac silhouette.'
+                if healthy_conf < 0.85:
+                    healthy_desc += ' Moderate confidence — further clinical verification recommended.'
                 analysis_results.append({
-                    'disease': 'Healthy Scan',
-                    'confidence': int((1.0 - sorted_diseases[0][1]) * 100) if sorted_diseases else 95,
+                    'disease': 'No Abnormality Detected',
+                    'confidence': int(healthy_conf * 100),
                     'status': 'healthy',
-                    'description': 'No significant abnormalities detected. Lung fields appear clear. Normal cardiac silhouette.',
+                    'description': healthy_desc,
                     'regions': []
                 })
                 for disease, prob in sorted_diseases[:3]:

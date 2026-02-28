@@ -444,18 +444,14 @@ class TuberculosisPredictor:
                     'regions': []
                 })
             else:
+                description = 'No tuberculosis detected. Lung fields appear clear of TB-specific patterns. No cavitation or characteristic TB lesions observed.'
+                if normal_prob < 0.85:
+                    description += ' Moderate confidence — further clinical verification recommended.'
                 analysis_results.append({
-                    'disease': 'Healthy Scan (TB)',
+                    'disease': 'No Tuberculosis Detected',
                     'confidence': int(normal_prob * 100),
                     'status': 'healthy',
-                    'description': 'No tuberculosis detected. Lung fields appear clear of TB-specific patterns. No cavitation or characteristic TB lesions observed.',
-                    'regions': []
-                })
-                analysis_results.append({
-                    'disease': 'Tuberculosis Risk',
-                    'confidence': int(tb_prob * 100),
-                    'status': 'healthy',
-                    'description': f'Low tuberculosis probability. No significant TB indicators present.',
+                    'description': description,
                     'regions': []
                 })
             

@@ -289,7 +289,7 @@ const AnalysisResults = ({ results, isAnalyzing, modelUsed, errorState, onReset,
           <div className="mt-4 pt-4 border-t border-border/50">
             <div className="flex items-center gap-2 mb-2 md:mb-3">
               <Target className="w-3.5 h-3.5 md:w-4 md:h-4 text-primary" />
-              <span className="text-xs md:text-sm font-medium">Affected Regions</span>
+              <span className="text-xs md:text-sm font-medium">{primaryResult.status === 'healthy' ? 'Analyzed Regions' : 'Affected Regions'}</span>
             </div>
             <div className="flex flex-wrap gap-1.5 md:gap-2">
               {primaryResult.regions.map((region, index) => (
@@ -369,7 +369,7 @@ const AnalysisResults = ({ results, isAnalyzing, modelUsed, errorState, onReset,
       <div className="flex items-start gap-2 md:gap-3 p-3 md:p-4 rounded-lg md:rounded-xl bg-primary/5 border border-primary/20">
         <Info className="w-4 h-4 md:w-5 md:h-5 text-primary flex-shrink-0 mt-0.5" />
         <p className="text-[10px] md:text-xs text-muted-foreground leading-relaxed">
-          This AI Analysis Is For Research And Educational Purposes Only. Always Consult A Qualified Healthcare Professional For Medical Diagnosis And Treatment.
+          This AI analysis is designed for preliminary screening in low-resource healthcare settings. For research and educational purposes only. Always consult a qualified healthcare professional for medical diagnosis and treatment.
         </p>
       </div>
     </div>

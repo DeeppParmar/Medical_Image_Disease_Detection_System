@@ -336,7 +336,7 @@ class MURAPredictor:
                     regions.append('Soft tissue interface')
                 
                 primary = {
-                    'disease': 'Bone Abnormality Detected (Positive)',
+                    'disease': 'Bone Abnormality Detected',
                     'confidence': int(prob * 100),
                     'status': status,
                     'description': description,
@@ -358,21 +358,17 @@ class MURAPredictor:
                 normal_prob = 1.0 - prob
                 
                 description = f'No significant bone fracture or abnormality detected ({normal_prob*100:.1f}% confidence). Bone structure appears normal.'
+                # Add confidence caveat for moderate confidence
+                if normal_prob < 0.85:
+                    description += ' Moderate confidence — further clinical verification recommended.'
                 
                 return [{
-                    'disease': 'Healthy Bone Scan (Negative)',
+                    'disease': 'No Abnormality Detected',
                     'confidence': int(normal_prob * 100),
                     'status': 'healthy',
                     'description': description,
-                    'regions': ['Bone cortex', 'Trabecular bone', 'Joint space'],
-                    'prediction': 'NEGATIVE'
-                }, {
-                    'disease': 'Abnormality Risk',
-                    'confidence': int(prob * 100),
-                    'status': 'healthy',
-                    'description': f'Low abnormality probability ({prob*100:.1f}%). No immediate concerns.',
                     'regions': [],
-                    'prediction': 'LOW_RISK'
+                    'prediction': 'NEGATIVE'
                 }]
 
         except Exception as e:
@@ -384,4 +380,3 @@ class MURAPredictor:
                 'regions': [],
                 'prediction': 'ERROR'
             }]
-
