@@ -44,8 +44,8 @@ except ImportError:
 
 BLEND_ALPHA = 0.72       # Original image weight (keep X-ray visible)
 BLEND_BETA = 0.28        # Heatmap weight (subtle, not overpowering)
-SMOOTH_KSIZE = 21        # Gaussian kernel for CAM smoothing (odd number)
-SMOOTH_SIGMA = 7         # Gaussian sigma for smooth gradients
+SMOOTH_KSIZE = 11        # Gaussian kernel for initial CAM smoothing (reduced!)
+SMOOTH_SIGMA = 4         # Gaussian sigma (lower = preserve separation)
 LUNG_MASK_THRESH = 25    # Intensity threshold for lung mask generation
 LUNG_MASK_BLUR = 25      # Gaussian blur kernel for soft lung mask edges
 SOFT_THRESH_POWER = 3.0  # Power for soft thresholding (higher = sharper)
@@ -56,7 +56,7 @@ BBOX_THICKNESS = 2       # Bounding box line thickness
 ASYMMETRY_BOOST = 0.15   # Boost factor for dominant-side emphasis
 CONTOUR_NOISE_AREA = 300 # Remove activation blobs smaller than this
 PERCENTILE_CUTOFF = 75   # Keep only top 25% activations
-SPREAD_POWER = 2.5       # Power compression to crush low values
+SPREAD_POWER = 2.2       # Power compression (2.2 = reduce center dominance)
 EDGE_DECAY_SIGMA_RATIO = 1/3  # Gaussian edge decay width ratio
 
 
@@ -298,25 +298,36 @@ def _limit_active_area(cam, percentile=PERCENTILE_CUTOFF):
 
 def _isolate_top_regions(cam, max_blobs=MAX_REGIONS):
     """
-    Multi-region separation: keep only the top N largest contour blobs.
+    Multi-region separation using connected component labeling.
 
-    Converts to binary at 0.6 threshold, finds contours, sorts by area,
-    keeps only the top max_blobs. Multiplies the mask back with the
-    original smooth CAM to preserve gradient detail within kept regions.
+    Uses scipy.ndimage.label for proper region separation (not contours,
+    which merge nearby blobs). Keeps only top N regions by total
+    activation mass. Preserves gradient detail within kept regions.
     """
-    cam_binary = (cam > 0.3).astype(np.uint8)
-    contours, _ = cv2.findContours(cam_binary, cv2.RETR_EXTERNAL,
-                                   cv2.CHAIN_APPROX_SIMPLE)
+    import scipy.ndimage as ndi
 
-    # Sort by area, keep top N
-    contours = sorted(contours, key=cv2.contourArea, reverse=True)[:max_blobs]
+    # Label connected components at 0.6 threshold
+    labeled, num_features = ndi.label(cam > 0.6)
+
+    if num_features == 0:
+        return cam
+
+    # Compute total activation mass per region
+    sizes = ndi.sum(cam, labeled, range(1, num_features + 1))
+
+    # Keep top N regions by activation mass
+    top_regions = sorted(
+        range(1, num_features + 1),
+        key=lambda i: sizes[i - 1],
+        reverse=True
+    )[:max_blobs]
 
     mask = np.zeros_like(cam, dtype=np.float32)
-    for cnt in contours:
-        cv2.drawContours(mask, [cnt], -1, 1.0, -1)
+    for i in top_regions:
+        mask[labeled == i] = 1.0
 
-    # Smooth the mask edges to avoid hard cutoffs
-    mask = cv2.GaussianBlur(mask, (15, 15), 0)
+    # Light smooth on mask edges only (9×9, not heavy)
+    mask = cv2.GaussianBlur(mask, (9, 9), 0)
     mask_max = mask.max()
     if mask_max > 1e-8:
         mask = mask / mask_max
@@ -354,7 +365,7 @@ def _postprocess_cam(cam, target_h, target_w, orig_img=None):
     # 1. Upscale to original image dimensions
     cam = cv2.resize(cam, (target_w, target_h), interpolation=cv2.INTER_CUBIC)
 
-    # 2. Gaussian smoothing — removes blocky/pixelated artifacts
+    # 2. Light smoothing (11×11) — remove pixelation WITHOUT merging regions
     cam = _smooth_cam(cam)
     cam = _normalize(cam)
 
@@ -372,15 +383,15 @@ def _postprocess_cam(cam, target_h, target_w, orig_img=None):
     cam = _limit_active_area(cam)
     cam = _normalize(cam)
 
-    # 6. Power compression — crush diffuse spread
+    # 6. Power compression (2.2) — reduce center dominance
     cam = _compress_spread(cam)
     cam = _normalize(cam)
 
-    # 7. Multi-region isolation — keep top 3 strongest blobs
+    # 7. Connected-component region separation — keep top 3 blobs
     cam = _isolate_top_regions(cam)
     cam = _normalize(cam)
 
-    # 8. Gaussian edge decay — suppress border activations  
+    # 8. Gaussian edge decay — suppress border activations
     cam = _apply_edge_decay(cam)
 
     # 9. Remove small disconnected blobs
@@ -388,9 +399,14 @@ def _postprocess_cam(cam, target_h, target_w, orig_img=None):
 
     # 10. Break unrealistic symmetry
     cam = _break_symmetry(cam)
+    cam = _normalize(cam)
 
-    # 11. Final smooth pass + normalize for clean output
-    cam = cv2.GaussianBlur(cam, (21, 21), 0)
+    # 11. Light diffusion (9×9) — not heavy, just clean edges
+    cam = cv2.GaussianBlur(cam, (9, 9), 0)
+
+    # 12. Research-style spread: 85% sharp + 15% soft halo
+    soft_halo = cv2.GaussianBlur(cam, (25, 25), 0)
+    cam = cam * 0.85 + soft_halo * 0.15
     cam = _normalize(cam)
 
     return cam
