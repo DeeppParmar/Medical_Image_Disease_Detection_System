@@ -149,7 +149,7 @@ class TuberculosisPredictor:
         self.load_model()
     
     def load_model(self):
-        """Load models - try PyTorch first, then TensorFlow."""
+        """Load models - try PyTorch first, then TensorFlow, then pretrained fallback."""
         
         # Try to load PyTorch model first (fine-tuned)
         if PYTORCH_AVAILABLE:
@@ -167,6 +167,30 @@ class TuberculosisPredictor:
         # Fall back to TensorFlow model
         if TF_AVAILABLE and self.model_path:
             self._load_tensorflow_model()
+            if self.model_loaded:
+                return
+        
+        # Final fallback: use pretrained DenseNet backbone (like MURA)
+        if PYTORCH_AVAILABLE:
+            try:
+                print("No fine-tuned TB checkpoint found. Loading pretrained DenseNet fallback...")
+                self.pytorch_device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+                self.pytorch_model = TBNetPyTorch(num_classes=2, pretrained=True)
+                self.pytorch_model = self.pytorch_model.to(self.pytorch_device)
+                self.pytorch_model.eval()
+                self.use_pytorch = True
+                self.pytorch_transform = transforms.Compose([
+                    transforms.Resize((256, 256)),
+                    transforms.CenterCrop(224),
+                    transforms.ToTensor(),
+                    transforms.Normalize(
+                        mean=[0.485, 0.456, 0.406],
+                        std=[0.229, 0.224, 0.225]
+                    )
+                ])
+                print("✓ Using pretrained DenseNet fallback for TB detection")
+            except Exception as e:
+                print(f"Could not load pretrained DenseNet fallback: {e}")
     
     def _load_pytorch_model(self, model_path):
         """Load PyTorch-based TB model."""

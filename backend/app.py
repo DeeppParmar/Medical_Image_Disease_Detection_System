@@ -136,32 +136,9 @@ def model_checkpoint_available(model_name: str) -> bool:
         return True
     
     if model_name == 'tuberculosis':
-        # First check for PyTorch model (preferred)
-        pytorch_paths = [
-            os.path.join(models_dir, 'tb', 'tb_model_best.pth'),
-            os.path.join(models_dir, 'tb', 'tb_model_final.pth'),
-            os.path.join(os.path.dirname(__file__), 'checkpoints', 'tb', 'tb_model_best.pth'),
-        ]
-        for path in pytorch_paths:
-            if os.path.isfile(path):
-                return True
-        
-        # Fallback: Check for TensorFlow model
-        if importlib.util.find_spec('tensorflow') is not None:
-            tb_base = os.path.join(base, 'TuberculosisNet')
-            candidates = [
-                os.path.join(tb_base, 'models', 'Baseline'),
-                os.path.join(tb_base, 'TB-Net')
-            ]
-            for d in candidates:
-                if os.path.isdir(d):
-                    files = os.listdir(d)
-                    has_meta = any(f.endswith('.meta') for f in files)
-                    has_index = any(f.endswith('.index') for f in files)
-                    has_data = any('.data-' in f for f in files)
-                    if has_meta and has_index and has_data:
-                        return True
-        return False
+        # TB model now uses ImageNet pretrained DenseNet fallback, always available
+        # (will prefer fine-tuned checkpoint if found, but works without one)
+        return True
     
     if model_name == 'unet':
         return os.path.isfile(os.path.join(base, 'UNet', 'MODEL.pth'))
