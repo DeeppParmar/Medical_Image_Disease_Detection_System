@@ -81,12 +81,22 @@ def enrich_result(result: dict) -> dict:
 
     interpretation = interpret_confidence(confidence)
 
-    # Add interpretation fields
+    # Add confidence level (applies to all results)
     result['confidence_level'] = interpretation['confidence_level']
-    result['final_assessment'] = interpretation['final_assessment']
 
-    # Only update status for abnormal results (don't override healthy→warning)
-    if current_status != 'healthy':
+    if current_status == 'healthy':
+        # HEALTHY results get positive assessments
+        if confidence >= 75:
+            result['final_assessment'] = 'No significant abnormalities detected'
+        elif confidence >= 50:
+            result['final_assessment'] = 'No abnormalities detected — clinical correlation recommended if symptomatic'
+        elif confidence >= 30:
+            result['final_assessment'] = 'Inconclusive — further evaluation recommended'
+        else:
+            result['final_assessment'] = 'Low confidence normal — consider re-examination'
+    else:
+        # ABNORMAL results get risk-based assessments
+        result['final_assessment'] = interpretation['final_assessment']
         result['status'] = interpretation['display_status']
 
     return result
