@@ -12,6 +12,8 @@ import logging
 
 logger = logging.getLogger("MediScan")
 
+from models.confidence_interpreter import enrich_results
+
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'datasets', 'CheXNet'))
 
 CLASS_NAMES = ['Atelectasis', 'Cardiomegaly', 'Effusion', 'Infiltration', 'Mass', 
@@ -334,7 +336,7 @@ class CheXNetPredictor:
                         })
             
             # Ensure we have at least 1 result, max 3
-            return analysis_results[:3]
+            return enrich_results(analysis_results[:3])
         
         except Exception as e:
             raise Exception(f"Error formatting CheXNet results for frontend: {str(e)}")

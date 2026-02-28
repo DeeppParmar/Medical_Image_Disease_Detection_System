@@ -26,6 +26,8 @@ export interface AnalysisResult {
   heatmap_bbox?: string | null;
   heatmap_regions?: HeatmapRegion[];
   warnings?: string[];
+  confidence_level?: string;
+  final_assessment?: string;
 }
 
 export interface ErrorState {
@@ -306,17 +308,37 @@ const AnalysisResults = ({ results, isAnalyzing, modelUsed, errorState, onReset,
             <div className="flex flex-wrap items-center gap-2 mb-1 md:mb-2">
               <h3 className="font-display font-bold text-lg md:text-xl">{primaryResult.disease}</h3>
               <span className={`px-2 py-0.5 rounded-full text-[10px] md:text-xs font-medium ${config.bgColor} ${config.color} whitespace-nowrap`}>
-                {primaryResult.status === 'healthy' ? 'Normal' : primaryResult.status === 'warning' ? 'Detected' : 'High Risk'}
+                {primaryResult.confidence_level
+                  ? (primaryResult.status === 'healthy'
+                    ? 'Normal'
+                    : primaryResult.confidence_level === 'High'
+                      ? 'High Risk'
+                      : primaryResult.confidence_level === 'Moderate'
+                        ? 'Moderate Risk'
+                        : primaryResult.confidence_level === 'Low'
+                          ? 'Low Confidence'
+                          : 'Unlikely')
+                  : (primaryResult.status === 'healthy' ? 'Normal' : primaryResult.status === 'warning' ? 'Moderate' : 'High Risk')}
               </span>
             </div>
             <p className="text-xs md:text-sm text-muted-foreground leading-relaxed">{primaryResult.description}</p>
+            {primaryResult.final_assessment && (
+              <p className="text-xs md:text-sm font-medium mt-2 px-2.5 py-1.5 rounded-lg bg-secondary/60 border border-border/30">
+                {primaryResult.final_assessment}
+              </p>
+            )}
           </div>
         </div>
 
         <div className="space-y-2">
           <div className="flex items-center justify-between text-xs md:text-sm">
-            <span className="text-muted-foreground">Confidence Score</span>
-            <span className="font-semibold">{primaryResult.confidence}%</span>
+            <span className="text-muted-foreground">Confidence</span>
+            <span className="font-semibold">
+              {primaryResult.confidence}%
+              {primaryResult.confidence_level && (
+                <span className="text-muted-foreground font-normal ml-1">({primaryResult.confidence_level})</span>
+              )}
+            </span>
           </div>
           <Progress value={primaryResult.confidence} className="h-2 md:h-3" />
         </div>

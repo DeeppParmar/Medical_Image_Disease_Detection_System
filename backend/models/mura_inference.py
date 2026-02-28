@@ -13,6 +13,8 @@ import logging
 
 logger = logging.getLogger("MediScan")
 
+from models.confidence_interpreter import enrich_results
+
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'datasets', 'DenseNet-MURA'))
 
 try:
@@ -351,7 +353,7 @@ class MURAPredictor:
                     'regions': [],
                     'prediction': 'PARTIAL'
                 }
-                return [primary, secondary]
+                return enrich_results([primary, secondary])
 
             else:
                 # NEGATIVE - No abnormality detected
@@ -362,14 +364,14 @@ class MURAPredictor:
                 if normal_prob < 0.85:
                     description += ' Moderate confidence — further clinical verification recommended.'
                 
-                return [{
+                return enrich_results([{
                     'disease': 'No Abnormality Detected',
                     'confidence': int(normal_prob * 100),
                     'status': 'healthy',
                     'description': description,
                     'regions': [],
                     'prediction': 'NEGATIVE'
-                }]
+                }])
 
         except Exception as e:
             return [{

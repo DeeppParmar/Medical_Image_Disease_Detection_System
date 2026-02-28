@@ -8,6 +8,8 @@ import logging
 
 logger = logging.getLogger("MediScan")
 
+from models.confidence_interpreter import enrich_results
+
 # PyTorch imports for fine-tuned model
 try:
     import torch
@@ -479,7 +481,7 @@ class TuberculosisPredictor:
                     'regions': []
                 })
             
-            return analysis_results
+            return enrich_results(analysis_results)
         
         except Exception as e:
             return [{

@@ -11,6 +11,8 @@ import logging
 
 logger = logging.getLogger("MediScan")
 
+from models.confidence_interpreter import enrich_results
+
 class RSNPredictor:
     def __init__(self):
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -98,7 +100,7 @@ class RSNPredictor:
 
             if is_hemo:
                 status = 'critical' if prob > 0.75 else 'warning'
-                return [{
+                return enrich_results([{
                     'disease': 'Intracranial Hemorrhage',
                     'confidence': int(prob * 100),
                     'status': status,
@@ -110,9 +112,9 @@ class RSNPredictor:
                     'status': 'healthy',
                     'description': 'Some features may still appear within normal limits.',
                     'regions': []
-                }]
+                }])
 
-            return [{
+            return enrich_results([{
                 'disease': 'Healthy Scan (CT)',
                 'confidence': int((1.0 - prob) * 100),
                 'status': 'healthy',
@@ -124,7 +126,7 @@ class RSNPredictor:
                 'status': 'healthy',
                 'description': 'Low hemorrhage probability.',
                 'regions': []
-            }]
+            }])
 
         except Exception as e:
             return [{
