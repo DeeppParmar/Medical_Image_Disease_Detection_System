@@ -36,13 +36,14 @@ except ImportError:
 
 
 # ── Constants ────────────────────────────────────────────────────────
-GAMMA = 1.8          # Power scaling: sharpens high-activation regions
-THRESHOLD = 0.45     # Noise gate: suppress activations below this
-BLEND_ALPHA = 0.55   # Original image weight in overlay
-BLEND_BETA = 0.45    # Heatmap weight in overlay
+GAMMA = 2.0          # Power-2 scaling: sharpens high-activation peaks
+THRESHOLD = 0.65     # Noise gate: only keep strong activations
+BLEND_ALPHA = 0.7    # Original image weight in overlay (dominant)
+BLEND_BETA = 0.3     # Heatmap weight in overlay (subtle)
 MIN_CONTOUR_AREA = 200  # Minimum pixel area for a bounding-box region
-BBOX_COLOR = (0, 255, 0)  # Green bounding boxes
+BBOX_COLOR = (0, 255, 255)  # Cyan bounding boxes for clean look
 BBOX_THICKNESS = 2
+CENTER_BIAS_RATIO = 1 / 3  # Radius ratio for center focus circle
 
 
 # ── Utility: find a layer by dotted path ─────────────────────────────
@@ -144,16 +145,60 @@ def _compute_gradcampp(model, input_tensor, target_layer, class_idx=None, device
         bh.remove()
 
 
-# ── Post-processing: gamma + threshold + resize ─────────────────────
-def _postprocess_cam(cam, target_h, target_w, gamma=GAMMA, threshold=THRESHOLD):
+# ── Lung mask: restrict heatmap to lung region ──────────────────────
+def _generate_lung_mask(orig_img):
+    """
+    Generate a soft lung mask from the original image using thresholding.
+    Works well for chest X-rays — removes outer/border noise so the
+    heatmap stays focused inside the lungs.
+
+    Returns:
+        mask: numpy array (H, W) with values in [0, 1].
+    """
+    gray = cv2.cvtColor(orig_img, cv2.COLOR_BGR2GRAY)
+    _, lung_mask = cv2.threshold(gray, 30, 255, cv2.THRESH_BINARY)
+    lung_mask = cv2.GaussianBlur(lung_mask, (15, 15), 0)
+    lung_mask = lung_mask.astype(np.float32) / 255.0
+    return lung_mask
+
+
+# ── Center focus: suppress corner/edge noise ─────────────────────────
+def _apply_center_bias(heatmap, ratio=CENTER_BIAS_RATIO):
+    """
+    Apply a circular center bias that suppresses activations near the
+    image corners. Medical models typically focus on central lung/organ
+    regions, so this reduces false activations at the edges.
+
+    Args:
+        heatmap: numpy array (H, W) in [0, 1].
+        ratio: radius expressed as fraction of min(H, W).
+
+    Returns:
+        heatmap multiplied by the center bias mask.
+    """
+    h, w = heatmap.shape
+    center_bias = np.zeros_like(heatmap)
+    cv2.circle(center_bias, (w // 2, h // 2), int(min(w, h) * ratio), 1.0, -1)
+    # Smooth edges so the cutoff isn't abrupt
+    center_bias = cv2.GaussianBlur(center_bias, (31, 31), 0)
+    center_bias = center_bias / (center_bias.max() + 1e-8)
+    return heatmap * center_bias
+
+
+# ── Post-processing: gamma + threshold + lung mask + center bias ─────
+def _postprocess_cam(cam, target_h, target_w, orig_img=None,
+                     gamma=GAMMA, threshold=THRESHOLD):
     """
     Enhance the raw CAM for visual clarity.
 
     Steps:
-      1. Gamma correction — amplifies high-activation peaks
-      2. Threshold — removes low-importance background noise
+      1. Gamma correction (power-2) — amplifies high-activation peaks
+      2. Threshold at 0.65 — removes low-importance noise
       3. Re-normalize to [0, 1]
       4. Resize to match original image dimensions
+      5. Apply lung mask — restrict heatmap to lung region
+      6. Apply center bias — suppress corner noise
+      7. Final re-normalize
     """
     # 1. Gamma correction (power scaling)
     cam = np.power(cam, gamma)
@@ -168,6 +213,19 @@ def _postprocess_cam(cam, target_h, target_w, gamma=GAMMA, threshold=THRESHOLD):
 
     # 4. High-quality resize to original image size
     cam_resized = cv2.resize(cam, (target_w, target_h), interpolation=cv2.INTER_CUBIC)
+
+    # 5. Apply lung mask (if original image is available)
+    if orig_img is not None:
+        lung_mask = _generate_lung_mask(orig_img)
+        cam_resized = cam_resized * lung_mask
+
+    # 6. Apply center bias to suppress corner noise
+    cam_resized = _apply_center_bias(cam_resized)
+
+    # 7. Final re-normalize
+    cam_max = cam_resized.max()
+    if cam_max > 1e-8:
+        cam_resized = cam_resized / cam_max
 
     return cam_resized
 
@@ -373,8 +431,8 @@ def generate_gradcam_full(image_path: str, model, target_layer_name: str,
         if cam is None:
             return None
 
-        # ── Post-process: gamma, threshold, resize to full res ──────
-        cam = _postprocess_cam(cam, orig_h, orig_w)
+        # ── Post-process: gamma, threshold, lung mask, center bias ────
+        cam = _postprocess_cam(cam, orig_h, orig_w, orig_img=orig_img)
 
         # ── Extract regions (bounding boxes) ────────────────────────
         regions = _extract_regions(cam, orig_h, orig_w)
