@@ -1,23 +1,26 @@
 """
-Grad-CAM++ (Gradient-weighted Class Activation Mapping Plus Plus)
+Research-Grade Grad-CAM++ Heatmap System
+=========================================
 
-Production-quality heatmap system for medical image analysis.
-Generates sharp, high-resolution attention maps with bounding boxes
-and region coordinates for UI explanation.
+Production-quality, clinically realistic heatmap visualization for
+chest X-ray / medical image analysis.
 
-Features:
-  - Grad-CAM++ for better spatial localization than basic Grad-CAM
-  - High-resolution output matching original image dimensions
-  - Gamma correction + thresholding for clean, sharp heatmaps
-  - Contour extraction with bounding boxes around significant regions
-  - Multi-view output: overlay / threshold-highlight / bounding-box
-  - Multi-label support (heatmap per predicted class)
-  - Region coordinate extraction for frontend UI
-  - Single forward+backward pass for performance (<3-4s per image)
+Design principles:
+  - Smooth gradients (no blocky patches) via Gaussian smoothing
+  - Soft thresholding (no hard cutoffs) preserving natural falloff
+  - Lung-region focus with intensity-based soft masking
+  - Asymmetry-aware: dominant pathological regions stay stronger
+  - Three clean visualization modes:
+      Mode 1 (Heatmap)  — smooth Grad-CAM++ overlay, research-paper style
+      Mode 2 (Focus)    — soft-threshold highlight, dimmed background
+      Mode 3 (Regions)  — bounding boxes on meaningful regions only (max 3)
+  - Single forward+backward pass, <3-4s total
+
+Compatible with Flask backend. Output keys match frontend expectations:
+  overlay / threshold / bbox / regions / class_idx
 """
 
 import base64
-import io
 import logging
 import time
 
@@ -35,53 +38,57 @@ except ImportError:
     TORCH_AVAILABLE = False
 
 
-# ── Constants ────────────────────────────────────────────────────────
-GAMMA = 2.0          # Power-2 scaling: sharpens high-activation peaks
-THRESHOLD = 0.65     # Noise gate: only keep strong activations
-BLEND_ALPHA = 0.7    # Original image weight in overlay (dominant)
-BLEND_BETA = 0.3     # Heatmap weight in overlay (subtle)
-MIN_CONTOUR_AREA = 200  # Minimum pixel area for a bounding-box region
-BBOX_COLOR = (0, 255, 255)  # Cyan bounding boxes for clean look
-BBOX_THICKNESS = 2
-CENTER_BIAS_RATIO = 1 / 3  # Radius ratio for center focus circle
+# ══════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ══════════════════════════════════════════════════════════════════════
+
+BLEND_ALPHA = 0.72       # Original image weight (keep X-ray visible)
+BLEND_BETA = 0.28        # Heatmap weight (subtle, not overpowering)
+SMOOTH_KSIZE = 21        # Gaussian kernel for CAM smoothing (odd number)
+SMOOTH_SIGMA = 7         # Gaussian sigma for smooth gradients
+LUNG_MASK_THRESH = 25    # Intensity threshold for lung mask generation
+LUNG_MASK_BLUR = 25      # Gaussian blur kernel for soft lung mask edges
+CENTER_BIAS_RATIO = 0.42 # Radius ratio for elliptical center focus
+SOFT_THRESH_POWER = 3.0  # Power for soft thresholding (higher = sharper)
+SOFT_THRESH_KNEE = 0.35  # Knee point: below this, activations fade rapidly
+MIN_CONTOUR_AREA = 500   # Minimum pixel area for region bounding boxes
+MAX_REGIONS = 3          # Maximum number of bounding-box regions to show
+BBOX_THICKNESS = 2       # Bounding box line thickness
+ASYMMETRY_BOOST = 0.15   # Boost factor for dominant-side emphasis
+CONTOUR_NOISE_AREA = 300 # Remove activation blobs smaller than this
 
 
-# ── Utility: find a layer by dotted path ─────────────────────────────
+# ══════════════════════════════════════════════════════════════════════
+# LAYER FINDER
+# ══════════════════════════════════════════════════════════════════════
+
 def _find_target_layer(model, target_layer_name: str):
     """Walk model's named modules to find the layer matching a dotted path."""
     for name, module in model.named_modules():
         if name == target_layer_name:
             return module
-    # Fallback: try model.features[-1] for DenseNet-style architectures
+    # Fallback: model.features[-1] for DenseNet-style architectures
     if hasattr(model, 'features'):
         return list(model.features.children())[-1]
     return None
 
 
-# ── Core: compute Grad-CAM++ activation map ──────────────────────────
-def _compute_gradcampp(model, input_tensor, target_layer, class_idx=None, device=None):
+# ══════════════════════════════════════════════════════════════════════
+# CORE: Grad-CAM++ COMPUTATION
+# ══════════════════════════════════════════════════════════════════════
+
+def _compute_gradcampp(model, input_tensor, target_layer,
+                       class_idx=None, device=None):
     """
-    Compute Grad-CAM++ activation map for a single image.
-
-    Grad-CAM++ uses second-order gradients to compute pixel-wise importance
-    weights, providing better localization than basic Grad-CAM especially
-    when multiple instances of a class appear in the image.
-
-    Args:
-        model: PyTorch model in eval mode.
-        input_tensor: Preprocessed image tensor (1, C, H, W).
-        target_layer: The nn.Module to hook into.
-        class_idx: Target class index. If None, uses top predicted class.
-        device: torch device.
+    Compute Grad-CAM++ activation map using second-order gradient weighting.
 
     Returns:
         cam: numpy array (H, W) normalized to [0, 1], or None on failure.
-        class_idx: The class index used for backprop.
+        class_idx: The class index used.
     """
     activations = []
     gradients = []
 
-    # Register hooks
     def fwd_hook(module, inp, out):
         activations.append(out.detach())
 
@@ -95,7 +102,7 @@ def _compute_gradcampp(model, input_tensor, target_layer, class_idx=None, device
         model.eval()
         input_tensor = input_tensor.to(device)
 
-        # ── Forward pass ────────────────────────────────────────────
+        # Forward pass
         output = model(input_tensor)
         if output.dim() == 1:
             output = output.unsqueeze(0)
@@ -104,7 +111,7 @@ def _compute_gradcampp(model, input_tensor, target_layer, class_idx=None, device
         if class_idx is None:
             class_idx = output.argmax(dim=1).item()
 
-        # ── Backward pass on target class score ─────────────────────
+        # Backward pass on target class score
         model.zero_grad()
         target_score = output[0, class_idx]
         target_score.backward(retain_graph=False)
@@ -116,18 +123,18 @@ def _compute_gradcampp(model, input_tensor, target_layer, class_idx=None, device
         act = activations[0]   # (1, C, H, W)
         grad = gradients[0]    # (1, C, H, W)
 
-        # ── Grad-CAM++ weight computation ───────────────────────────
+        # Grad-CAM++ weight computation:
         # α_kc = grad² / (2·grad² + Σ(act · grad³) + ε)
         grad_sq = grad.pow(2)
         grad_cb = grad.pow(3)
         sum_act_grad_cb = (act * grad_cb).sum(dim=(2, 3), keepdim=True)
         alpha = grad_sq / (2.0 * grad_sq + sum_act_grad_cb + 1e-8)
 
-        # w_k = Σ(α · ReLU(dY/dA))  — pixel-wise importance weights
-        weights = (alpha * F.relu(grad)).sum(dim=(2, 3), keepdim=True)  # (1, C, 1, 1)
+        # w_k = Σ(α · ReLU(dY/dA))
+        weights = (alpha * F.relu(grad)).sum(dim=(2, 3), keepdim=True)
 
-        # Weighted combination of activations
-        cam = (weights * act).sum(dim=1, keepdim=True)  # (1, 1, h, w)
+        # Weighted combination → ReLU → normalize
+        cam = (weights * act).sum(dim=1, keepdim=True)
         cam = F.relu(cam)
         cam = cam.squeeze().cpu().numpy()
 
@@ -145,137 +152,265 @@ def _compute_gradcampp(model, input_tensor, target_layer, class_idx=None, device
         bh.remove()
 
 
-# ── Lung mask: restrict heatmap to lung region ──────────────────────
+# ══════════════════════════════════════════════════════════════════════
+# POST-PROCESSING: Research-grade pipeline
+# ══════════════════════════════════════════════════════════════════════
+
+def _smooth_cam(cam, ksize=SMOOTH_KSIZE, sigma=SMOOTH_SIGMA):
+    """Apply Gaussian smoothing for research-paper-style gradients."""
+    return cv2.GaussianBlur(cam.astype(np.float32), (ksize, ksize), sigma)
+
+
+def _normalize(cam):
+    """Normalize to [0, 1] safely."""
+    cmin, cmax = cam.min(), cam.max()
+    if cmax - cmin > 1e-8:
+        return (cam - cmin) / (cmax - cmin)
+    return np.zeros_like(cam)
+
+
+def _soft_threshold(cam, knee=SOFT_THRESH_KNEE, power=SOFT_THRESH_POWER):
+    """
+    Soft threshold — preserves smooth gradients instead of hard cutoff.
+
+    Uses a sigmoid-like ramp:  output = cam * sigmoid((cam - knee) * steepness)
+    This keeps strong activations mostly intact while smoothly attenuating
+    weak ones, avoiding the blocky artifacts of hard thresholding.
+    """
+    # Steepness controls how sharp the transition is around the knee
+    steepness = 10.0
+    gate = 1.0 / (1.0 + np.exp(-steepness * (cam - knee)))
+    return cam * gate
+
+
 def _generate_lung_mask(orig_img):
     """
-    Generate a soft lung mask from the original image using thresholding.
-    Works well for chest X-rays — removes outer/border noise so the
-    heatmap stays focused inside the lungs.
+    Generate a soft lung-region mask from the original chest X-ray.
+
+    Uses adaptive thresholding + morphological cleanup to isolate the
+    lung fields. The mask is heavily blurred to create soft, natural edges
+    that blend smoothly with the heatmap (no hard cutoffs at lung borders).
 
     Returns:
-        mask: numpy array (H, W) with values in [0, 1].
+        mask: numpy (H, W), float32 in [0, 1].
     """
     gray = cv2.cvtColor(orig_img, cv2.COLOR_BGR2GRAY)
-    _, lung_mask = cv2.threshold(gray, 30, 255, cv2.THRESH_BINARY)
-    lung_mask = cv2.GaussianBlur(lung_mask, (15, 15), 0)
-    lung_mask = lung_mask.astype(np.float32) / 255.0
-    return lung_mask
+
+    # Threshold to isolate body from background
+    _, body_mask = cv2.threshold(gray, LUNG_MASK_THRESH, 255, cv2.THRESH_BINARY)
+
+    # Morphological cleanup: close small holes, remove noise
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
+    body_mask = cv2.morphologyEx(body_mask, cv2.MORPH_CLOSE, kernel)
+    body_mask = cv2.morphologyEx(body_mask, cv2.MORPH_OPEN, kernel)
+
+    # Heavy Gaussian blur for soft edges (no abrupt mask boundaries)
+    mask = cv2.GaussianBlur(body_mask, (LUNG_MASK_BLUR, LUNG_MASK_BLUR), 0)
+    mask = mask.astype(np.float32) / 255.0
+
+    return mask
 
 
-# ── Center focus: suppress corner/edge noise ─────────────────────────
-def _apply_center_bias(heatmap, ratio=CENTER_BIAS_RATIO):
+def _apply_center_focus(heatmap, ratio=CENTER_BIAS_RATIO):
     """
-    Apply a circular center bias that suppresses activations near the
-    image corners. Medical models typically focus on central lung/organ
-    regions, so this reduces false activations at the edges.
+    Apply an elliptical center bias to suppress border/corner noise.
 
-    Args:
-        heatmap: numpy array (H, W) in [0, 1].
-        ratio: radius expressed as fraction of min(H, W).
-
-    Returns:
-        heatmap multiplied by the center bias mask.
+    Uses a smoothly-faded ellipse rather than a hard circle, so the
+    transition from focused to suppressed is natural.
     """
     h, w = heatmap.shape
-    center_bias = np.zeros_like(heatmap)
-    cv2.circle(center_bias, (w // 2, h // 2), int(min(w, h) * ratio), 1.0, -1)
-    # Smooth edges so the cutoff isn't abrupt
-    center_bias = cv2.GaussianBlur(center_bias, (31, 31), 0)
-    center_bias = center_bias / (center_bias.max() + 1e-8)
-    return heatmap * center_bias
+    center_mask = np.zeros((h, w), dtype=np.float32)
+
+    # Elliptical shape: wider horizontally (lungs are side by side)
+    axes = (int(w * ratio), int(h * ratio * 0.85))
+    cv2.ellipse(center_mask, (w // 2, h // 2), axes, 0, 0, 360, 1.0, -1)
+
+    # Smooth the edges with heavy blur
+    center_mask = cv2.GaussianBlur(center_mask, (51, 51), 0)
+    cmax = center_mask.max()
+    if cmax > 1e-8:
+        center_mask = center_mask / cmax
+
+    return heatmap * center_mask
 
 
-# ── Post-processing: gamma + threshold + lung mask + center bias ─────
-def _postprocess_cam(cam, target_h, target_w, orig_img=None,
-                     gamma=GAMMA, threshold=THRESHOLD):
+def _remove_small_blobs(cam, min_area=CONTOUR_NOISE_AREA):
     """
-    Enhance the raw CAM for visual clarity.
+    Remove small disconnected activation blobs using contour filtering.
 
-    Steps:
-      1. Gamma correction (power-2) — amplifies high-activation peaks
-      2. Threshold at 0.65 — removes low-importance noise
-      3. Re-normalize to [0, 1]
-      4. Resize to match original image dimensions
-      5. Apply lung mask — restrict heatmap to lung region
-      6. Apply center bias — suppress corner noise
-      7. Final re-normalize
+    Converts to binary, finds contours, zeros out regions smaller than
+    min_area, then multiplies back with the original smooth CAM to
+    preserve gradients in the kept regions.
     """
-    # 1. Gamma correction (power scaling)
-    cam = np.power(cam, gamma)
+    cam_uint8 = (cam * 255).astype(np.uint8)
+    _, binary = cv2.threshold(cam_uint8, 25, 255, cv2.THRESH_BINARY)
 
-    # 2. Threshold low-activation noise
-    cam[cam < threshold] = 0.0
+    # Find and filter contours
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL,
+                                   cv2.CHAIN_APPROX_SIMPLE)
 
-    # 3. Re-normalize after threshold
-    cam_max = cam.max()
-    if cam_max > 1e-8:
-        cam = cam / cam_max
+    # Build a mask of regions to keep
+    keep_mask = np.zeros_like(binary)
+    for cnt in contours:
+        if cv2.contourArea(cnt) >= min_area:
+            cv2.drawContours(keep_mask, [cnt], -1, 255, -1)
 
-    # 4. High-quality resize to original image size
-    cam_resized = cv2.resize(cam, (target_w, target_h), interpolation=cv2.INTER_CUBIC)
+    # Smooth the keep_mask so we don't get hard edges
+    keep_mask = cv2.GaussianBlur(keep_mask, (15, 15), 0)
+    keep_mask = keep_mask.astype(np.float32) / 255.0
 
-    # 5. Apply lung mask (if original image is available)
+    return cam * keep_mask
+
+
+def _break_symmetry(cam):
+    """
+    Reduce unrealistic bilateral symmetry in the heatmap.
+
+    Real pathology is usually asymmetric (one lung more affected).
+    This function detects which half has stronger activations and
+    slightly boosts it while attenuating the weaker half.
+    """
+    h, w = cam.shape
+    mid = w // 2
+
+    left_mean = cam[:, :mid].mean()
+    right_mean = cam[:, mid:].mean()
+
+    if abs(left_mean - right_mean) < 0.02:
+        # Nearly identical sides — boost the dominant one
+        if left_mean >= right_mean:
+            cam[:, :mid] *= (1.0 + ASYMMETRY_BOOST)
+            cam[:, mid:] *= (1.0 - ASYMMETRY_BOOST * 0.5)
+        else:
+            cam[:, mid:] *= (1.0 + ASYMMETRY_BOOST)
+            cam[:, :mid] *= (1.0 - ASYMMETRY_BOOST * 0.5)
+
+    return cam
+
+
+def _postprocess_cam(cam, target_h, target_w, orig_img=None):
+    """
+    Full research-grade post-processing pipeline.
+
+    Pipeline order:
+      1. Upscale to full resolution (bicubic)
+      2. Gaussian smoothing (remove pixelation)
+      3. Soft threshold (preserve gradients, suppress noise)
+      4. Lung mask (restrict to chest region)
+      5. Center focus (suppress border noise)
+      6. Remove small blobs (contour filtering)
+      7. Break symmetry (realistic asymmetry)
+      8. Final smooth + normalize
+    """
+    # 1. Upscale to original image dimensions
+    cam = cv2.resize(cam, (target_w, target_h), interpolation=cv2.INTER_CUBIC)
+
+    # 2. Gaussian smoothing — removes blocky/pixelated artifacts
+    cam = _smooth_cam(cam)
+    cam = _normalize(cam)
+
+    # 3. Soft threshold — smooth attenuation of weak activations
+    cam = _soft_threshold(cam)
+    cam = _normalize(cam)
+
+    # 4. Lung mask — restrict heatmap to lung/body region
     if orig_img is not None:
         lung_mask = _generate_lung_mask(orig_img)
-        cam_resized = cam_resized * lung_mask
+        cam = cam * lung_mask
 
-    # 6. Apply center bias to suppress corner noise
-    cam_resized = _apply_center_bias(cam_resized)
+    # 5. Center focus — suppress corner/border noise
+    cam = _apply_center_focus(cam)
 
-    # 7. Final re-normalize
-    cam_max = cam_resized.max()
-    if cam_max > 1e-8:
-        cam_resized = cam_resized / cam_max
+    # 6. Remove small disconnected blobs
+    cam = _remove_small_blobs(cam)
 
-    return cam_resized
+    # 7. Break unrealistic symmetry
+    cam = _break_symmetry(cam)
+
+    # 8. Final smooth pass + normalize for clean output
+    cam = cv2.GaussianBlur(cam, (11, 11), 3)
+    cam = _normalize(cam)
+
+    return cam
 
 
-# ── Rendering: generate the different view modes ─────────────────────
-def _render_overlay(orig_img, cam, alpha=BLEND_ALPHA, beta=BLEND_BETA):
-    """Blend heatmap over original image. Returns BGR uint8 image."""
+# ══════════════════════════════════════════════════════════════════════
+# RENDERING: Three visualization modes
+# ══════════════════════════════════════════════════════════════════════
+
+def _render_heatmap(orig_img, cam, alpha=BLEND_ALPHA, beta=BLEND_BETA):
+    """
+    Mode 1: HEATMAP — Research-paper style smooth overlay.
+
+    Smooth Grad-CAM++ blended over original X-ray.
+    No bounding boxes, no harsh thresholding.
+    X-ray anatomy remains clearly visible.
+    """
+    # Apply JET colormap to the smooth heatmap
     cam_uint8 = (cam * 255).astype(np.uint8)
     heatmap_colored = cv2.applyColorMap(cam_uint8, cv2.COLORMAP_JET)
-    blended = cv2.addWeighted(orig_img, alpha, heatmap_colored, beta, 0)
-    return blended
 
+    # Where CAM is near-zero, we don't want blue tinting from JET.
+    # Create a soft mixing mask so zero-CAM areas show pure original.
+    mix_mask = cam.copy()
+    mix_mask = np.clip(mix_mask * 2.0, 0, 1)  # Ramp up faster
+    mix_mask = cv2.GaussianBlur(mix_mask, (7, 7), 0)
+    mix_3ch = np.stack([mix_mask] * 3, axis=-1)
 
-def _render_threshold(orig_img, cam, threshold=0.5):
-    """Show only high-activation regions with red tint. Returns BGR uint8 image."""
-    mask = (cam > threshold).astype(np.float32)
-    # Smooth the mask edges
-    mask = cv2.GaussianBlur(mask, (7, 7), 0)
+    # Blend: where CAM > 0 show overlay; where CAM ≈ 0 show original
+    overlay = cv2.addWeighted(orig_img, alpha, heatmap_colored, beta, 0)
+    result = (orig_img * (1.0 - mix_3ch) + overlay * mix_3ch).astype(np.uint8)
 
-    # Create red highlight
-    highlight = orig_img.copy()
-    red_tint = np.zeros_like(orig_img)
-    red_tint[:, :, 2] = 255  # Red channel
-    highlight = cv2.addWeighted(highlight, 0.7, red_tint, 0.3, 0)
-
-    # Composite: original where mask=0, highlight where mask>0
-    mask_3ch = np.stack([mask] * 3, axis=-1)
-    result = (orig_img * (1 - mask_3ch) + highlight * mask_3ch).astype(np.uint8)
     return result
 
 
-def _extract_regions(cam, orig_h, orig_w, min_area=MIN_CONTOUR_AREA):
+def _render_focus(orig_img, cam, focus_threshold=0.30):
     """
-    Extract bounding box regions from high-activation areas.
+    Mode 2: FOCUS — Soft-threshold highlight with dimmed background.
 
-    Returns:
-        regions: list of dicts with keys 'x', 'y', 'w', 'h', 'intensity'
-                 Coordinates are relative to original image dimensions.
+    Strong activation regions are highlighted with a warm color tint.
+    Background is slightly dimmed (not black) so anatomical context
+    remains visible. Smooth transitions, no hard edges.
     """
-    # Binary mask of high-activation areas
+    # Create soft focus mask using sigmoid-style ramp
+    steepness = 8.0
+    focus_mask = 1.0 / (1.0 + np.exp(-steepness * (cam - focus_threshold)))
+    focus_mask = cv2.GaussianBlur(focus_mask.astype(np.float32), (15, 15), 0)
+    focus_3ch = np.stack([focus_mask] * 3, axis=-1)
+
+    # Dimmed background (60% brightness)
+    dimmed = (orig_img * 0.4).astype(np.uint8)
+
+    # Warm highlight tint on focused regions
+    warm_tint = orig_img.copy().astype(np.float32)
+    warm_tint[:, :, 2] = np.minimum(warm_tint[:, :, 2] * 1.3, 255)  # Boost red
+    warm_tint[:, :, 1] = warm_tint[:, :, 1] * 0.95  # Slight green reduction
+    warm_tint = warm_tint.astype(np.uint8)
+
+    # Composite: dimmed background + warm-tinted focus areas
+    result = (dimmed * (1.0 - focus_3ch) + warm_tint * focus_3ch).astype(np.uint8)
+
+    return result
+
+
+def _extract_regions(cam, orig_h, orig_w, min_area=MIN_CONTOUR_AREA,
+                     max_regions=MAX_REGIONS):
+    """
+    Extract the top meaningful bounding-box regions from the heatmap.
+
+    Uses morphological cleanup + contour detection. Limits output to
+    max_regions (default 3) largest/strongest regions to avoid clutter.
+    """
     cam_uint8 = (cam * 255).astype(np.uint8)
-    _, binary = cv2.threshold(cam_uint8, int(0.5 * 255), 255, cv2.THRESH_BINARY)
+    _, binary = cv2.threshold(cam_uint8, int(0.35 * 255), 255, cv2.THRESH_BINARY)
 
-    # Clean up with morphological operations
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+    # Morphological cleanup: close gaps, remove noise
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
     binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
     binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
 
-    # Find contours
-    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL,
+                                   cv2.CHAIN_APPROX_SIMPLE)
 
     regions = []
     for cnt in contours:
@@ -284,25 +419,29 @@ def _extract_regions(cam, orig_h, orig_w, min_area=MIN_CONTOUR_AREA):
             continue
         x, y, w, h = cv2.boundingRect(cnt)
 
-        # Mean intensity within this bounding box
+        # Mean activation intensity within this bounding box
         roi = cam[y:y+h, x:x+w]
         intensity = float(np.mean(roi)) if roi.size > 0 else 0.0
 
         regions.append({
-            'x': int(x),
-            'y': int(y),
-            'w': int(w),
-            'h': int(h),
+            'x': int(x), 'y': int(y),
+            'w': int(w), 'h': int(h),
             'intensity': round(intensity, 3)
         })
 
-    # Sort by intensity (most important first)
+    # Sort by intensity (strongest first), limit to max_regions
     regions.sort(key=lambda r: r['intensity'], reverse=True)
-    return regions
+    return regions[:max_regions]
 
 
-def _render_bbox(orig_img, cam, regions=None):
-    """Draw bounding boxes around significant activation regions."""
+def _render_regions(orig_img, cam, regions=None):
+    """
+    Mode 3: REGIONS — Clean bounding boxes on meaningful areas only.
+
+    No noise boxes. Maximum 3 regions. Color-coded by intensity:
+      High intensity → red, Medium → orange, Low → yellow.
+    Labels show region number and intensity percentage.
+    """
     result = orig_img.copy()
 
     if regions is None:
@@ -311,26 +450,40 @@ def _render_bbox(orig_img, cam, regions=None):
 
     for i, r in enumerate(regions):
         x, y, w, h = r['x'], r['y'], r['w'], r['h']
-        # Color intensity based on importance (green → yellow → red)
         intensity = r.get('intensity', 0.5)
-        color = (
-            0,
-            int(255 * (1 - intensity)),
-            int(255 * intensity)
-        )  # BGR: low=green, high=red
 
-        cv2.rectangle(result, (x, y), (x + w, y + h), color, BBOX_THICKNESS)
+        # Color gradient: yellow → orange → red based on intensity
+        # BGR format
+        red = int(np.clip(255, 0, 255))
+        green = int(np.clip(255 * (1.0 - intensity * 0.8), 0, 255))
+        blue = 0
+        color = (blue, green, red)
 
-        # Label with region number
+        # Draw rounded-feel rectangle (thicker for higher intensity)
+        thickness = max(BBOX_THICKNESS, int(intensity * 3) + 1)
+        cv2.rectangle(result, (x, y), (x + w, y + h), color, thickness)
+
+        # Label: region number + intensity
         label = f"R{i+1}: {intensity:.0%}"
-        font_scale = max(0.4, min(0.6, w / 200))
-        cv2.putText(result, label, (x, max(y - 5, 12)),
-                    cv2.FONT_HERSHEY_SIMPLEX, font_scale, color, 1, cv2.LINE_AA)
+        font_scale = max(0.45, min(0.65, w / 180))
+
+        # Label background for readability
+        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX,
+                                      font_scale, 1)
+        label_y = max(y - 8, th + 4)
+        cv2.rectangle(result, (x, label_y - th - 4),
+                      (x + tw + 6, label_y + 2), color, -1)
+        cv2.putText(result, label, (x + 3, label_y - 2),
+                    cv2.FONT_HERSHEY_SIMPLEX, font_scale,
+                    (255, 255, 255), 1, cv2.LINE_AA)
 
     return result
 
 
-# ── Encoding helper ──────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════
+# ENCODING HELPER
+# ══════════════════════════════════════════════════════════════════════
+
 def _encode_image_b64(img_bgr):
     """Encode a BGR numpy image to base64 PNG string."""
     _, buffer = cv2.imencode('.png', img_bgr)
@@ -342,23 +495,9 @@ def _encode_image_b64(img_bgr):
 # ══════════════════════════════════════════════════════════════════════
 
 def generate_gradcam(image_path: str, model, target_layer_name: str,
-                     device=None, preprocess_fn=None, class_idx=None) -> str | None:
+                     device=None, preprocess_fn=None, class_idx=None):
     """
-    Generate a Grad-CAM++ heatmap overlay for the given image.
-
-    This is the backward-compatible entry point used by _attach_heatmap().
-    Returns a single base64-encoded PNG of the blended heatmap overlay.
-
-    Args:
-        image_path: Path to the input image.
-        model: PyTorch model (must be in eval mode).
-        target_layer_name: Dotted path to target conv layer.
-        device: torch device. Defaults to CPU.
-        preprocess_fn: Optional callable(image_path) -> tensor.
-        class_idx: Target class index. None = top predicted class.
-
-    Returns:
-        Base64-encoded PNG string of the overlay heatmap, or None on failure.
+    Backward-compatible entry point. Returns base64 heatmap overlay PNG.
     """
     result = generate_gradcam_full(image_path, model, target_layer_name,
                                    device=device, preprocess_fn=preprocess_fn,
@@ -370,17 +509,17 @@ def generate_gradcam(image_path: str, model, target_layer_name: str,
 
 def generate_gradcam_full(image_path: str, model, target_layer_name: str,
                            device=None, preprocess_fn=None,
-                           class_idx=None) -> dict | None:
+                           class_idx=None):
     """
-    Generate full Grad-CAM++ output with multiple views and region data.
+    Generate research-grade Grad-CAM++ output with three visualization modes.
 
     Returns:
-        dict with keys:
-            'overlay':    base64 PNG — heatmap blended over original
-            'threshold':  base64 PNG — high-activation highlight view
-            'bbox':       base64 PNG — bounding boxes on activation regions
-            'regions':    list of region dicts [{'x','y','w','h','intensity'}, ...]
-            'class_idx':  int — the class index used for heatmap
+        dict with keys (matching frontend expectations):
+            'overlay':    base64 PNG — Mode 1: smooth heatmap overlay
+            'threshold':  base64 PNG — Mode 2: soft-focus highlight
+            'bbox':       base64 PNG — Mode 3: region bounding boxes
+            'regions':    list of region dicts [{'x','y','w','h','intensity'}]
+            'class_idx':  int — class index used for heatmap
         Or None on failure.
     """
     if not TORCH_AVAILABLE:
@@ -393,13 +532,14 @@ def generate_gradcam_full(image_path: str, model, target_layer_name: str,
         if device is None:
             device = torch.device('cpu')
 
-        # ── Find target layer ───────────────────────────────────────
+        # ── Find target layer ────────────────────────────────────────
         target_layer = _find_target_layer(model, target_layer_name)
         if target_layer is None:
-            logger.warning(f"[GRADCAM++] Target layer '{target_layer_name}' not found")
+            logger.warning(
+                f"[GRADCAM++] Target layer '{target_layer_name}' not found")
             return None
 
-        # ── Preprocess input ────────────────────────────────────────
+        # ── Preprocess input tensor ──────────────────────────────────
         if preprocess_fn is not None:
             input_tensor = preprocess_fn(image_path)
             if not isinstance(input_tensor, torch.Tensor):
@@ -418,42 +558,44 @@ def generate_gradcam_full(image_path: str, model, target_layer_name: str,
             img = Image.open(image_path).convert('RGB')
             input_tensor = transform(img).unsqueeze(0)
 
-        # ── Load original image at full resolution ──────────────────
+        # ── Load original image at full resolution ───────────────────
         orig_img = cv2.imread(image_path)
         if orig_img is None:
             pil_img = Image.open(image_path).convert('RGB')
             orig_img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
         orig_h, orig_w = orig_img.shape[:2]
 
-        # ── Compute Grad-CAM++ ──────────────────────────────────────
-        cam, used_class = _compute_gradcampp(model, input_tensor, target_layer,
-                                              class_idx=class_idx, device=device)
+        # ── Compute Grad-CAM++ ───────────────────────────────────────
+        cam, used_class = _compute_gradcampp(
+            model, input_tensor, target_layer,
+            class_idx=class_idx, device=device)
         if cam is None:
             return None
 
-        # ── Post-process: gamma, threshold, lung mask, center bias ────
+        # ── Post-process: full research-grade pipeline ───────────────
         cam = _postprocess_cam(cam, orig_h, orig_w, orig_img=orig_img)
 
-        # ── Extract regions (bounding boxes) ────────────────────────
+        # ── Extract regions (for Mode 3 + frontend data) ─────────────
         regions = _extract_regions(cam, orig_h, orig_w)
 
-        # ── Render multiple views ───────────────────────────────────
-        overlay_img = _render_overlay(orig_img, cam)
-        threshold_img = _render_threshold(orig_img, cam)
-        bbox_img = _render_bbox(orig_img, cam, regions=regions)
+        # ── Render three visualization modes ─────────────────────────
+        heatmap_img = _render_heatmap(orig_img, cam)       # Mode 1
+        focus_img = _render_focus(orig_img, cam)            # Mode 2
+        regions_img = _render_regions(orig_img, cam, regions)  # Mode 3
 
-        # ── Encode to base64 ────────────────────────────────────────
+        # ── Encode to base64 (keys match frontend expectations) ──────
         result = {
-            'overlay': _encode_image_b64(overlay_img),
-            'threshold': _encode_image_b64(threshold_img),
-            'bbox': _encode_image_b64(bbox_img),
+            'overlay': _encode_image_b64(heatmap_img),
+            'threshold': _encode_image_b64(focus_img),
+            'bbox': _encode_image_b64(regions_img),
             'regions': regions,
             'class_idx': used_class,
         }
 
         elapsed = time.time() - t0
-        logger.info(f"[GRADCAM++] Heatmap generated | layer={target_layer_name} "
-                     f"| class={used_class} | regions={len(regions)} | {elapsed:.2f}s")
+        logger.info(
+            f"[GRADCAM++] Heatmap generated | layer={target_layer_name} "
+            f"| class={used_class} | regions={len(regions)} | {elapsed:.2f}s")
 
         return result
 
