@@ -35,22 +35,13 @@ from models.gradcam import generate_gradcam
 
 app = Flask(__name__)
 
-# Dynamic CORS origins — includes local dev + deployed frontend URL from env
-_local_origins = [
-    "http://localhost:8080", "http://127.0.0.1:8080",
-    "http://localhost:5173", "http://127.0.0.1:5173",
-    "http://localhost:8081", "http://127.0.0.1:8081",
-]
-_frontend_url = os.environ.get("FRONTEND_URL", "").strip()
-if _frontend_url:
-    _local_origins.append(_frontend_url)
-
-CORS(app, origins=_local_origins,
-     supports_credentials=True,
+# CORS — allow all origins for development; restrict in production via FRONTEND_URL
+CORS(app, origins="*",
+     supports_credentials=False,
      expose_headers=["X-Model-Used"])
 
 # Initialize SocketIO for real-time communication
-socketio = SocketIO(app, cors_allowed_origins=_local_origins,
+socketio = SocketIO(app, cors_allowed_origins="*",
                     async_mode='threading')
 
 # Configuration
@@ -86,6 +77,21 @@ model_status = {
 
 # Analysis sessions for real-time tracking
 analysis_sessions = {}
+
+import gc
+def safe_remove(filepath, retries=5, delay=0.3):
+    """Safely remove a file, retrying on Windows file-lock errors."""
+    for i in range(retries):
+        try:
+            gc.collect()  # release any lingering Python references
+            if os.path.exists(filepath):
+                os.remove(filepath)
+            return
+        except PermissionError:
+            if i < retries - 1:
+                time.sleep(delay)
+            else:
+                logger.warning(f"[CLEANUP] Could not delete {filepath} after {retries} retries")
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -534,7 +540,7 @@ def predict(model_name):
         result = predictor.predict(filepath)
         
         # Clean up uploaded file
-        os.remove(filepath)
+        safe_remove(filepath)
         
         resp = jsonify({
             'success': True,
@@ -547,8 +553,7 @@ def predict(model_name):
     except Exception as e:
         # Clean up on error
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], secure_filename(file.filename))
-        if os.path.exists(filepath):
-            os.remove(filepath)
+        safe_remove(filepath)
         
         return jsonify({
             'success': False,
@@ -632,7 +637,7 @@ def analyze():
         # 1. File size check (15 MB server limit)
         file_size = os.path.getsize(filepath)
         if file_size > 15 * 1024 * 1024:
-            os.remove(filepath)
+            safe_remove(filepath)
             logger.error(f"[ERROR] file_too_large: {file_size} bytes")
             return jsonify({'error': 'file_too_large', 'message': 'File exceeds 15MB server limit'}), 413
 
@@ -646,13 +651,13 @@ def analyze():
                 pil_img = PILImage.open(filepath)  # re-open after verify
                 img_w, img_h = pil_img.size
             except Exception:
-                os.remove(filepath)
+                safe_remove(filepath)
                 logger.error(f"[ERROR] unsupported_scan: Cannot decode image {filename}")
                 return jsonify({'error': 'unsupported_scan', 'message': 'Cannot decode image'}), 415
 
             # 3. Resolution check
             if img_w < 32 or img_h < 32:
-                os.remove(filepath)
+                safe_remove(filepath)
                 logger.error(f"[ERROR] resolution_too_low: {img_w}x{img_h}")
                 return jsonify({'error': 'resolution_too_low', 'message': f'Image resolution too low ({img_w}x{img_h}). Minimum 32x32 required.'}), 422
 
@@ -711,8 +716,7 @@ def analyze():
             result = _attach_heatmap(result, filepath_to_clean, used_model, predictors.get(used_model))
             if response_warnings and isinstance(result, list) and len(result) > 0:
                 result[0]['warnings'] = response_warnings
-            if filepath_to_clean and os.path.exists(filepath_to_clean):
-                os.remove(filepath_to_clean)
+            safe_remove(filepath_to_clean)
             if isinstance(result, list) and len(result) > 0:
                 logger.info(f"[INFERENCE] Model={used_model} | Time={t_end - t0:.2f}s | TopResult={result[0].get('disease', '?')} @ {result[0].get('confidence', 0):.0f}%")
             logger.info(f"[RESPONSE] Returning {len(result) if isinstance(result, list) else 1} results to frontend")
@@ -725,7 +729,7 @@ def analyze():
         if selected_model == 'rsna':
             logger.info("[MODEL] Loading predictor: rsna")
             if not model_checkpoint_available('rsna'):
-                os.remove(filepath)
+                safe_remove(filepath)
                 logger.error("[ERROR] model_not_loaded: RSNA model not available")
                 return jsonify({'error': 'model_not_loaded', 'message': 'RSNA model weights not found'}), 503
             predictor = get_predictor('rsna')
@@ -735,7 +739,7 @@ def analyze():
         if selected_model == 'mura':
             logger.info("[MODEL] Loading predictor: mura")
             if not model_checkpoint_available('mura'):
-                os.remove(filepath)
+                safe_remove(filepath)
                 logger.error("[ERROR] model_not_loaded: MURA model not available")
                 return jsonify({'error': 'model_not_loaded', 'message': 'MURA model weights not found'}), 503
             try:
@@ -743,7 +747,7 @@ def analyze():
                 result = predictor.predict_for_frontend(filepath)
                 return _build_response(result, 'mura', filepath)
             except Exception as e:
-                os.remove(filepath)
+                safe_remove(filepath)
                 logger.error(f"[ERROR] processing_failed: MURA Error: {e}")
                 return jsonify({'error': 'processing_failed', 'message': str(e)}), 500
         
@@ -751,7 +755,7 @@ def analyze():
         if selected_model == 'tuberculosis':
             logger.info("[MODEL] Loading predictor: tuberculosis")
             if not model_checkpoint_available('tuberculosis'):
-                os.remove(filepath)
+                safe_remove(filepath)
                 logger.error("[ERROR] model_not_loaded: Tuberculosis model not available")
                 return jsonify({'error': 'model_not_loaded', 'message': 'Tuberculosis model weights not found'}), 503
             try:
@@ -759,7 +763,7 @@ def analyze():
                 result = tb_predictor.predict_for_frontend(filepath)
                 return _build_response(result, 'tuberculosis', filepath)
             except Exception as e:
-                os.remove(filepath)
+                safe_remove(filepath)
                 logger.error(f"[ERROR] processing_failed: Tuberculosis Error: {e}")
                 return jsonify({'error': 'processing_failed', 'message': str(e)}), 500
         
@@ -767,7 +771,7 @@ def analyze():
         if selected_model == 'chexnet':
             logger.info("[MODEL] Loading predictor: chexnet")
             if not model_checkpoint_available('chexnet'):
-                os.remove(filepath)
+                safe_remove(filepath)
                 logger.error("[ERROR] model_not_loaded: CheXNet model not available")
                 return jsonify({'error': 'model_not_loaded', 'message': 'CheXNet model weights not found'}), 503
             try:
@@ -775,7 +779,7 @@ def analyze():
                 result = predictor.predict_for_frontend(filepath)
                 return _build_response(result, 'chexnet', filepath)
             except Exception as e:
-                os.remove(filepath)
+                safe_remove(filepath)
                 logger.error(f"[ERROR] processing_failed: CheXNet Error: {e}")
                 return jsonify({'error': 'processing_failed', 'message': str(e)}), 500
         
@@ -839,7 +843,7 @@ def analyze():
         # Default to CheXNet for general chest X-ray analysis
         logger.info("[MODEL] Loading predictor: chexnet (default)")
         if not model_checkpoint_available('chexnet'):
-            os.remove(filepath)
+            safe_remove(filepath)
             logger.error("[ERROR] model_not_loaded: CheXNet model not available")
             return jsonify({'error': 'model_not_loaded', 'message': 'CheXNet model weights not found'}), 503
         try:
@@ -847,14 +851,13 @@ def analyze():
             result = predictor.predict_for_frontend(filepath)
             return _build_response(result, 'chexnet', filepath)
         except Exception as e:
-            os.remove(filepath)
+            safe_remove(filepath)
             logger.error(f"[ERROR] processing_failed: CheXNet Error: {e}")
             return jsonify({'error': 'processing_failed', 'message': str(e)}), 500
     
     except Exception as e:
         # Clean up on error
-        if filepath and os.path.exists(filepath):
-            os.remove(filepath)
+        safe_remove(filepath)
         
         logger.error(f"[ERROR] processing_failed: {traceback.format_exc()}")
         return jsonify({
@@ -921,6 +924,6 @@ if __name__ == '__main__':
     print("Available models: chexnet, mura, tuberculosis, rsna, unet")
     print("Frontend endpoint: /api/analyze")
     print(f"Backend running on: http://0.0.0.0:{port}")
-    print(f"CORS enabled for: {_local_origins}")
+    print("CORS enabled for: * (all origins)")
     app.run(debug=True, host='0.0.0.0', port=port, use_reloader=False)
 
