@@ -7,6 +7,9 @@ import torch
 import torch.nn as nn
 import torchvision.models as models
 import torchvision.transforms as transforms
+import logging
+
+logger = logging.getLogger("MediScan")
 
 class RSNPredictor:
     def __init__(self):
@@ -63,12 +66,16 @@ class RSNPredictor:
     def predict(self, image_path):
         try:
             image_tensor = self.preprocess_image(image_path).to(self.device)
+            logger.info(f"[RSNA] Preprocessing complete | Input shape: {image_tensor.shape}")
             
             with torch.no_grad():
                 output = self.model(image_tensor)
                 probability = torch.sigmoid(output).cpu().numpy()[0][0]
             
             is_hemorrhage = probability > 0.5
+            
+            logger.info(f"[RSNA] Raw probabilities: hemorrhage={probability:.3f}")
+            logger.info(f"[RSNA] Final prediction: {'Hemorrhage' if is_hemorrhage else 'Normal'} | Confidence: {max(probability, 1-probability):.2%} | Status: {'hemorrhage' if is_hemorrhage else 'normal'}")
             
             return {
                 'model': 'RSNA',

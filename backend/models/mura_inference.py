@@ -9,6 +9,9 @@ from torchvision import models
 from PIL import Image
 import numpy as np
 import cv2
+import logging
+
+logger = logging.getLogger("MediScan")
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'datasets', 'DenseNet-MURA'))
 
@@ -197,6 +200,7 @@ class MURAPredictor:
         try:
             # Get deep learning prediction for additional variance
             image_tensor = self.preprocess_image(image_path).to(self.device)
+            logger.info(f"[MURA] Preprocessing complete | Input shape: {image_tensor.shape}")
             
             with torch.no_grad():
                 dl_output = self.model(image_tensor)
@@ -272,6 +276,10 @@ class MURAPredictor:
             print(f"  🦴 Bone Analysis: DL={dl_probability:.3f}, Edge={edge_score:.3f}, "
                   f"Texture={texture_score:.3f}, Contrast={contrast_score:.3f}, "
                   f"Indicators={indicators}, Combined={combined_prob:.3f}, Abnormal={is_abnormal}")
+            
+            top_disease = 'Abnormality Detected' if is_abnormal else 'Normal'
+            logger.info(f"[MURA] Raw probabilities: combined={combined_prob:.3f}, dl={dl_probability:.3f}")
+            logger.info(f"[MURA] Final prediction: {top_disease} | Confidence: {confidence:.2%} | Status: {'abnormal' if is_abnormal else 'normal'}")
             
             return {
                 'model': 'MURA (Real-time Analysis)',

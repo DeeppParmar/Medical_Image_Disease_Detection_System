@@ -2,7 +2,7 @@ import { useState } from "react";
 import { RotateCcw, Cpu, Clock } from "lucide-react";
 import { Button } from "./ui/button";
 import ImageUpload from "./ImageUpload";
-import AnalysisResults, { AnalysisResult } from "./AnalysisResults";
+import AnalysisResults, { AnalysisResult, ErrorState } from "./AnalysisResults";
 import { API_ENDPOINTS } from "@/config";
 
 const AnalysisSection = () => {
@@ -12,12 +12,14 @@ const AnalysisSection = () => {
   const [modelUsed, setModelUsed] = useState<string | null>(null);
   const [processingTime, setProcessingTime] = useState<number | null>(null);
   const [showResults, setShowResults] = useState(false);
+  const [errorState, setErrorState] = useState<ErrorState | null>(null);
 
   const runAnalysis = async (file: File) => {
     setIsAnalyzing(true);
     setResults(null);
     setModelUsed(null);
     setProcessingTime(null);
+    setErrorState(null);
     setShowResults(true);
 
     const startTime = Date.now();
@@ -60,7 +62,7 @@ const AnalysisSection = () => {
       const usedModel = response.headers.get('X-Model-Used');
       console.log('🔬 Analysis Response:');
       console.log('   Model Used:', usedModel);
-      
+
       if (usedModel) {
         const modelNames: Record<string, string> = {
           'chexnet': 'CheXNet',
@@ -76,33 +78,66 @@ const AnalysisSection = () => {
       console.log('   Response Status:', response.status);
       console.log('   Results:', JSON.stringify(data, null, 2));
 
+      // ── Feature 2 — Structured error handling ────────────────────
       if (!response.ok) {
+        const errorField = data?.error as string | undefined;
+
+        if (response.status === 503 || errorField === 'model_not_loaded') {
+          setErrorState({
+            type: 'model_unavailable',
+            message: data?.message || 'Model not available. The AI model for this scan type is not loaded. Please try again or select a different scan.',
+          });
+          return;
+        }
+        if (response.status === 415 || response.status === 422 || errorField === 'unsupported_scan' || errorField === 'resolution_too_low') {
+          setErrorState({
+            type: 'unsupported_scan',
+            message: data?.message || 'Unsupported scan type. This image format or scan type cannot be processed.',
+          });
+          return;
+        }
+        if (response.status === 413 || errorField === 'file_too_large') {
+          setErrorState({
+            type: 'unsupported_scan',
+            message: data?.message || 'File too large. Maximum server limit is 15MB.',
+          });
+          return;
+        }
+
+        // If it returned an array (legacy unavailable model result), still display it
         if (Array.isArray(data)) {
           setResults(data);
           return;
         }
-        throw new Error(`API error: ${response.status} ${response.statusText}`);
+
+        // Catch-all
+        setErrorState({
+          type: 'processing_failed',
+          message: data?.message || `Processing failed. An unexpected error occurred during analysis. (HTTP ${response.status})`,
+        });
+        return;
       }
 
       if (Array.isArray(data)) {
         // Log each result for verification
         console.log('📊 Analysis Results Summary:');
-        data.forEach((r: any, i: number) => {
+        data.forEach((r: AnalysisResult, i: number) => {
           console.log(`   ${i + 1}. ${r.disease}: ${r.confidence}% (${r.status})`);
         });
         setResults(data);
       } else {
         console.error('Unexpected API response format:', data);
-        throw new Error('Invalid response format from API');
+        setErrorState({
+          type: 'processing_failed',
+          message: 'Invalid response format from API.',
+        });
       }
     } catch (error) {
       console.error('Analysis failed:', error);
-      setResults([{
-        disease: 'Connection Error',
-        confidence: 0,
-        status: 'warning',
-        description: `Could not connect to backend. Make sure the server is running at ${API_ENDPOINTS.ANALYZE}`
-      }]);
+      setErrorState({
+        type: 'processing_failed',
+        message: `Could not connect to backend. Make sure the server is running at ${API_ENDPOINTS.ANALYZE}`,
+      });
     } finally {
       setIsAnalyzing(false);
     }
@@ -110,6 +145,7 @@ const AnalysisSection = () => {
 
   const handleImageSelect = (file: File) => {
     setSelectedImage(file);
+    setErrorState(null);
     // Auto-analyze immediately after image selection
     runAnalysis(file);
   };
@@ -121,7 +157,11 @@ const AnalysisSection = () => {
     setModelUsed(null);
     setProcessingTime(null);
     setShowResults(false);
+    setErrorState(null);
   };
+
+  // Create uploaded image URL for heatmap toggle
+  const uploadedImageUrl = selectedImage ? URL.createObjectURL(selectedImage) : null;
 
   return (
     <section className="py-8 md:py-12 lg:py-16 flex-1 flex flex-col" id="analyze">
@@ -198,7 +238,14 @@ const AnalysisSection = () => {
 
                 {/* Results Section */}
                 <div className="lg:col-span-7">
-                  <AnalysisResults results={results} isAnalyzing={isAnalyzing} modelUsed={modelUsed} />
+                  <AnalysisResults
+                    results={results}
+                    isAnalyzing={isAnalyzing}
+                    modelUsed={modelUsed}
+                    errorState={errorState}
+                    onReset={handleClear}
+                    uploadedImageUrl={uploadedImageUrl}
+                  />
                 </div>
               </div>
             </div>
@@ -210,4 +257,3 @@ const AnalysisSection = () => {
 };
 
 export default AnalysisSection;
-

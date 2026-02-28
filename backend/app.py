@@ -12,7 +12,17 @@ import traceback
 import threading
 import time
 import uuid
+import logging
 from concurrent.futures import ThreadPoolExecutor
+from PIL import Image as PILImage
+
+# ── Structured Logging ──────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(asctime)s] %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger("MediScan")
 
 sys.path.append(os.path.join(os.path.dirname(__file__), 'models'))
 
@@ -21,6 +31,7 @@ from models.mura_inference import MURAPredictor
 from models.tuberculosis_inference import TuberculosisPredictor
 from models.rsna_inference import RSNPredictor
 from models.unet_inference import UNetPredictor
+from models.gradcam import generate_gradcam
 
 app = Flask(__name__)
 
@@ -545,44 +556,128 @@ def predict(model_name):
             'traceback': traceback.format_exc()
         }), 500
 
+# ── Grad-CAM target layer mapping per model ──────────────────────────
+GRADCAM_LAYERS = {
+    'chexnet':      'densenet121.features.denseblock4',
+    'tuberculosis': 'backbone.features.denseblock4',
+    'mura':         'backbone.features.denseblock4',
+    'rsna':         'layer4',
+}
+
+def _attach_heatmap(result_list, filepath, model_name, predictor):
+    """
+    Attempt to generate a Grad-CAM heatmap and attach it to result_list[0].
+    Gracefully sets heatmap=None when generation is not possible.
+    """
+    heatmap = None
+    try:
+        layer = GRADCAM_LAYERS.get(model_name)
+        torch_model = None
+        device = None
+        preprocess_fn = None
+
+        if model_name == 'chexnet' and hasattr(predictor, 'model') and predictor.model is not None:
+            torch_model = predictor.model
+            device = predictor.device
+            preprocess_fn = predictor.preprocess_image
+        elif model_name == 'tuberculosis' and getattr(predictor, 'use_pytorch', False) and predictor.pytorch_model is not None:
+            torch_model = predictor.pytorch_model
+            device = predictor.pytorch_device
+        elif model_name == 'mura' and hasattr(predictor, 'model') and predictor.model is not None:
+            torch_model = predictor.model
+            device = predictor.device
+        elif model_name == 'rsna' and hasattr(predictor, 'model') and predictor.model is not None:
+            torch_model = predictor.model
+            device = predictor.device
+
+        if torch_model is not None and layer is not None:
+            heatmap = generate_gradcam(filepath, torch_model, layer, device=device,
+                                       preprocess_fn=preprocess_fn)
+    except Exception as hm_err:
+        logger.error(f"[GRADCAM] Heatmap generation failed for {model_name}: {hm_err}")
+
+    if result_list and isinstance(result_list, list) and len(result_list) > 0:
+        result_list[0]['heatmap'] = heatmap
+    return result_list
+
+
 @app.route('/api/analyze', methods=['POST'])
 def analyze():
-    print("\n" + "="*60)
-    print("🔬 NEW ANALYSIS REQUEST")
-    print("="*60)
+    logger.info("[REQUEST] " + "="*50)
+    logger.info("[REQUEST] New analysis request received")
     
     if 'image' not in request.files and 'file' not in request.files:
-        print("❌ Error: No image file provided")
-        return jsonify({'error': 'No image file provided'}), 400
+        logger.error("[ERROR] no_file: No image file provided")
+        return jsonify({'error': 'unsupported_scan', 'message': 'No image file provided'}), 400
     
     file = request.files.get('image') or request.files.get('file')
     
     if file.filename == '':
-        print("❌ Error: No file selected")
-        return jsonify({'error': 'No file selected'}), 400
+        logger.error("[ERROR] no_file: No file selected")
+        return jsonify({'error': 'unsupported_scan', 'message': 'No file selected'}), 400
     
     if not allowed_file(file.filename):
-        print(f"❌ Error: File type not allowed - {file.filename}")
-        return jsonify({'error': 'File type not allowed. Supported: PNG, JPG, JPEG, DICOM (.dcm)'}), 400
+        logger.error(f"[ERROR] unsupported_scan: File type not allowed - {file.filename}")
+        return jsonify({'error': 'unsupported_scan', 'message': 'File type not allowed. Supported: PNG, JPG, JPEG, DICOM (.dcm)'}), 415
     
+    filepath = None
     try:
         # Save uploaded file
         filename = secure_filename(file.filename)
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         file.save(filepath)
-        print(f"📁 File received: {filename}")
+        logger.info(f"[REQUEST] New analysis request received | filename={filename}")
+
+        # ── Server-side validation ──────────────────────────────────────
+        # 1. File size check (15 MB server limit)
+        file_size = os.path.getsize(filepath)
+        if file_size > 15 * 1024 * 1024:
+            os.remove(filepath)
+            logger.error(f"[ERROR] file_too_large: {file_size} bytes")
+            return jsonify({'error': 'file_too_large', 'message': 'File exceeds 15MB server limit'}), 413
+
+        # 2. Image decode check
+        ext = os.path.splitext(filename.lower())[1].lstrip('.')
+        response_warnings = []
+        if ext != 'dcm':
+            try:
+                pil_img = PILImage.open(filepath)
+                pil_img.verify()  # verify integrity
+                pil_img = PILImage.open(filepath)  # re-open after verify
+                img_w, img_h = pil_img.size
+            except Exception:
+                os.remove(filepath)
+                logger.error(f"[ERROR] unsupported_scan: Cannot decode image {filename}")
+                return jsonify({'error': 'unsupported_scan', 'message': 'Cannot decode image'}), 415
+
+            # 3. Resolution check
+            if img_w < 32 or img_h < 32:
+                os.remove(filepath)
+                logger.error(f"[ERROR] resolution_too_low: {img_w}x{img_h}")
+                return jsonify({'error': 'resolution_too_low', 'message': f'Image resolution too low ({img_w}x{img_h}). Minimum 32x32 required.'}), 422
+
+            # 4. Blur detection (Laplacian variance)
+            try:
+                gray = cv2.imread(filepath, cv2.IMREAD_GRAYSCALE)
+                if gray is not None:
+                    lap_var = cv2.Laplacian(gray, cv2.CV_64F).var()
+                    if lap_var < 50:
+                        response_warnings.append('low_image_quality')
+                        logger.warning(f"[VALIDATION] Low image quality detected | laplacian_var={lap_var:.1f}")
+            except Exception:
+                pass  # non-blocking
 
         scan_type = (request.form.get('scan_type') or request.args.get('scan_type') or 'auto').strip().lower()
         requested_model = (request.form.get('model') or request.args.get('model') or '').strip().lower()
         filename_lower = filename.lower()
-        ext = os.path.splitext(filename_lower)[1].lstrip('.')
-        print(f"📋 Requested scan_type: {scan_type}, model: {requested_model or 'auto'}")
+        if ext == '':
+            ext = os.path.splitext(filename_lower)[1].lstrip('.')
+        logger.info(f"[REQUEST] scan_type={scan_type} | model={requested_model or 'auto'} | ext={ext}")
 
         if scan_type == 'auto':
             inferred_scan_type = infer_scan_type_from_image(filepath, ext)
-            # infer_scan_type_from_image now always returns a valid type (defaults to 'chest')
             scan_type = inferred_scan_type
-            print(f"🔍 Auto-detected scan type: {scan_type}")
+            logger.info(f"[ROUTING] Inferred scan type: {scan_type}")
 
         bone_keywords = ['wrist', 'hand', 'elbow', 'shoulder', 'humerus', 'finger', 'forearm', 'ankle', 'foot', 'knee', 'hip', 'bone', 'mura']
         ct_keywords = ['ct', 'brain', 'head', 'intracranial', 'rsna']
@@ -607,94 +702,82 @@ def analyze():
         else:
             selected_model = inferred_model
 
-        print(f"🎯 Selected model: {selected_model or 'auto (will try TB then CheXNet)'}")
+        model_name_for_log = selected_model or 'auto (TB→CheXNet)'
+        logger.info(f"[ROUTING] Model selected: {model_name_for_log}")
 
-        if selected_model == 'rsna':
-            print("🧠 Using RSNA model for CT/Brain analysis...")
-            if not model_checkpoint_available('rsna'):
-                os.remove(filepath)
-                print("❌ RSNA model not available")
-                resp = jsonify(unavailable_model_result('rsna'))
-                resp.headers['X-Model-Used'] = 'rsna'
-                return resp
-            predictor = get_predictor('rsna')
-            result = predictor.predict_for_frontend(filepath)
-            os.remove(filepath)
-            print(f"✅ RSNA Analysis Result: {result}")
+        # ── Helper: build response with optional warnings + heatmap ──
+        def _build_response(result, used_model, filepath_to_clean):
+            t_end = time.time()
+            result = _attach_heatmap(result, filepath_to_clean, used_model, predictors.get(used_model))
+            if response_warnings and isinstance(result, list) and len(result) > 0:
+                result[0]['warnings'] = response_warnings
+            if filepath_to_clean and os.path.exists(filepath_to_clean):
+                os.remove(filepath_to_clean)
+            if isinstance(result, list) and len(result) > 0:
+                logger.info(f"[INFERENCE] Model={used_model} | Time={t_end - t0:.2f}s | TopResult={result[0].get('disease', '?')} @ {result[0].get('confidence', 0):.0f}%")
+            logger.info(f"[RESPONSE] Returning {len(result) if isinstance(result, list) else 1} results to frontend")
             resp = jsonify(result)
-            resp.headers['X-Model-Used'] = 'rsna'
+            resp.headers['X-Model-Used'] = used_model
             return resp
 
+        t0 = time.time()
+
+        if selected_model == 'rsna':
+            logger.info("[MODEL] Loading predictor: rsna")
+            if not model_checkpoint_available('rsna'):
+                os.remove(filepath)
+                logger.error("[ERROR] model_not_loaded: RSNA model not available")
+                return jsonify({'error': 'model_not_loaded', 'message': 'RSNA model weights not found'}), 503
+            predictor = get_predictor('rsna')
+            result = predictor.predict_for_frontend(filepath)
+            return _build_response(result, 'rsna', filepath)
+
         if selected_model == 'mura':
-            print("🦴 Using MURA model for bone X-ray analysis...")
+            logger.info("[MODEL] Loading predictor: mura")
             if not model_checkpoint_available('mura'):
                 os.remove(filepath)
-                print("❌ MURA model not available")
-                resp = jsonify(unavailable_model_result('mura'))
-                resp.headers['X-Model-Used'] = 'mura'
-                return resp
+                logger.error("[ERROR] model_not_loaded: MURA model not available")
+                return jsonify({'error': 'model_not_loaded', 'message': 'MURA model weights not found'}), 503
             try:
                 predictor = get_predictor('mura')
                 result = predictor.predict_for_frontend(filepath)
-                os.remove(filepath)
-                print(f"✅ MURA Analysis Result: {result}\")")
-                resp = jsonify(result)
-                resp.headers['X-Model-Used'] = 'mura'
-                return resp
+                return _build_response(result, 'mura', filepath)
             except Exception as e:
                 os.remove(filepath)
-                print(f"❌ MURA Error: {e}")
-                resp = jsonify(model_error_result('mura', str(e)))
-                resp.headers['X-Model-Used'] = 'mura'
-                return resp, 500
+                logger.error(f"[ERROR] processing_failed: MURA Error: {e}")
+                return jsonify({'error': 'processing_failed', 'message': str(e)}), 500
         
         # Explicitly requested tuberculosis model
         if selected_model == 'tuberculosis':
-            print("🫁 Using Tuberculosis model (explicitly requested)...")
+            logger.info("[MODEL] Loading predictor: tuberculosis")
             if not model_checkpoint_available('tuberculosis'):
                 os.remove(filepath)
-                print("❌ Tuberculosis model not available")
-                resp = jsonify(unavailable_model_result('tuberculosis'))
-                resp.headers['X-Model-Used'] = 'tuberculosis'
-                return resp
+                logger.error("[ERROR] model_not_loaded: Tuberculosis model not available")
+                return jsonify({'error': 'model_not_loaded', 'message': 'Tuberculosis model weights not found'}), 503
             try:
                 tb_predictor = get_predictor('tuberculosis')
                 result = tb_predictor.predict_for_frontend(filepath)
-                os.remove(filepath)
-                print(f"✅ TB Analysis Result: {result}")
-                resp = jsonify(result)
-                resp.headers['X-Model-Used'] = 'tuberculosis'
-                return resp
+                return _build_response(result, 'tuberculosis', filepath)
             except Exception as e:
                 os.remove(filepath)
-                print(f"❌ Tuberculosis Error: {e}")
-                resp = jsonify(model_error_result('tuberculosis', str(e)))
-                resp.headers['X-Model-Used'] = 'tuberculosis'
-                return resp, 500
+                logger.error(f"[ERROR] processing_failed: Tuberculosis Error: {e}")
+                return jsonify({'error': 'processing_failed', 'message': str(e)}), 500
         
         # Explicitly requested chexnet model
         if selected_model == 'chexnet':
-            print("🫁 Using CheXNet model (explicitly requested)...")
+            logger.info("[MODEL] Loading predictor: chexnet")
             if not model_checkpoint_available('chexnet'):
                 os.remove(filepath)
-                print("❌ CheXNet model not available")
-                resp = jsonify(unavailable_model_result('chexnet'))
-                resp.headers['X-Model-Used'] = 'chexnet'
-                return resp
+                logger.error("[ERROR] model_not_loaded: CheXNet model not available")
+                return jsonify({'error': 'model_not_loaded', 'message': 'CheXNet model weights not found'}), 503
             try:
                 predictor = get_predictor('chexnet')
                 result = predictor.predict_for_frontend(filepath)
-                os.remove(filepath)
-                print(f"✅ CheXNet Analysis Result: {result}")
-                resp = jsonify(result)
-                resp.headers['X-Model-Used'] = 'chexnet'
-                return resp
+                return _build_response(result, 'chexnet', filepath)
             except Exception as e:
                 os.remove(filepath)
-                print(f"❌ CheXNet Error: {e}")
-                resp = jsonify(model_error_result('chexnet', str(e)))
-                resp.headers['X-Model-Used'] = 'chexnet'
-                return resp, 500
+                logger.error(f"[ERROR] processing_failed: CheXNet Error: {e}")
+                return jsonify({'error': 'processing_failed', 'message': str(e)}), 500
         
         # Auto-detect flow: Handle based on detected scan type
         
@@ -702,29 +785,23 @@ def analyze():
         if scan_type == 'unknown':
             try:
                 if model_checkpoint_available('mura'):
-                    print("❓ Unknown scan type - checking MURA for bone analysis...")
+                    logger.info("[ROUTING] Unknown scan type — checking MURA for bone analysis")
                     mura_predictor = get_predictor('mura')
                     mura_raw = mura_predictor.predict(filepath)
                     mura_prob = float(mura_raw.get('abnormality_probability', 0.0))
                     mura_conf = float(mura_raw.get('confidence', 0.0))
-                    print(f"   MURA abnormality probability: {mura_prob:.2%}, confidence: {mura_conf:.2%}")
-                    # If MURA is confident it's a bone image OR detects abnormality
+                    logger.info(f"[INFERENCE] MURA probe: abnormality={mura_prob:.2%}, confidence={mura_conf:.2%}")
                     if mura_conf > 0.6 or mura_prob > 0.5:
-                        print(f"🦴 MURA detected this as bone X-ray!")
                         result = mura_predictor.predict_for_frontend(filepath)
-                        os.remove(filepath)
-                        print(f"✅ MURA Analysis Result: {result}")
-                        resp = jsonify(result)
-                        resp.headers['X-Model-Used'] = 'mura'
-                        return resp
+                        return _build_response(result, 'mura', filepath)
             except Exception as mura_error:
-                print(f"⚠️ MURA check failed: {mura_error}")
+                logger.warning(f"[ROUTING] MURA check failed: {mura_error}")
         
         # Only try TB model for chest X-rays (not unknown)
         tb_checked = False
         tb_is_positive = False
         if scan_type == 'chest':
-            print("🫁 Checking for Tuberculosis...")
+            logger.info("[MODEL] Loading predictor: tuberculosis (auto-check)")
             try:
                 if not model_checkpoint_available('tuberculosis'):
                     raise Exception('Tuberculosis model checkpoint not found')
@@ -732,84 +809,57 @@ def analyze():
                 tb_raw = tb_predictor.predict(filepath)
                 tb_prob = tb_raw.get('tuberculosis_probability', 0.0)
                 normal_prob = tb_raw.get('normal_probability', 0.0)
-                print(f"   TB raw result: Normal={normal_prob:.2%}, TB={tb_prob:.2%}")
+                logger.info(f"[INFERENCE] TB probe: Normal={normal_prob:.2%}, TB={tb_prob:.2%}")
                 tb_checked = True
                 
-                # If TB is detected with confidence > 55%, use TB model immediately
                 if 'is_tuberculosis' in tb_raw and tb_raw['is_tuberculosis'] and tb_prob > 0.55:
-                    print(f"🔴 Tuberculosis DETECTED with {tb_prob:.2%} confidence!")
+                    logger.info(f"[INFERENCE] Tuberculosis DETECTED with {tb_prob:.2%} confidence")
                     tb_is_positive = True
                     result = tb_predictor.predict_for_frontend(filepath)
-                    os.remove(filepath)
-                    print(f"✅ TB Analysis Result: {result}")
-                    resp = jsonify(result)
-                    resp.headers['X-Model-Used'] = 'tuberculosis'
-                    return resp
+                    return _build_response(result, 'tuberculosis', filepath)
                 
-                # Continue to CheXNet for other conditions even if TB is negative
-                print(f"✅ No TB detected (Normal={normal_prob:.2%}), checking CheXNet for other conditions...")
+                logger.info(f"[ROUTING] No TB detected, falling through to CheXNet")
             except Exception as tb_error:
-                print(f"⚠️ TB model check failed: {tb_error}")
-                app.logger.warning(f"TB model failed, falling back to CheXNet: {tb_error}")
+                logger.warning(f"[ROUTING] TB model check failed: {tb_error}")
 
         if scan_type != 'chest':
             try:
                 if model_checkpoint_available('mura'):
-                    print("🦴 Also checking MURA for non-chest scan...")
+                    logger.info("[MODEL] Loading predictor: mura (non-chest fallback)")
                     mura_predictor = get_predictor('mura')
                     mura_raw = mura_predictor.predict(filepath)
                     mura_prob = float(mura_raw.get('abnormality_probability', 0.0))
-                    print(f"   MURA abnormality probability: {mura_prob:.2%}")
+                    logger.info(f"[INFERENCE] MURA probe: abnormality={mura_prob:.2%}")
                     if mura_prob > 0.65:
-                        print(f"🔴 MURA detected abnormality!")
                         result = mura_predictor.predict_for_frontend(filepath)
-                        os.remove(filepath)
-                        print(f"✅ MURA Analysis Result: {result}")
-                        resp = jsonify(result)
-                        resp.headers['X-Model-Used'] = 'mura'
-                        return resp
+                        return _build_response(result, 'mura', filepath)
             except Exception as mura_error:
-                print(f"⚠️ MURA check failed: {mura_error}")
-                app.logger.warning(f"MURA model check failed, falling back to CheXNet: {mura_error}")
+                logger.warning(f"[ROUTING] MURA check failed: {mura_error}")
         
         # Default to CheXNet for general chest X-ray analysis
-        print("🫁 Using CheXNet for chest X-ray analysis...")
+        logger.info("[MODEL] Loading predictor: chexnet (default)")
         if not model_checkpoint_available('chexnet'):
             os.remove(filepath)
-            print("❌ CheXNet model not available")
-            resp = jsonify(unavailable_model_result('chexnet'))
-            resp.headers['X-Model-Used'] = 'chexnet'
-            return resp
+            logger.error("[ERROR] model_not_loaded: CheXNet model not available")
+            return jsonify({'error': 'model_not_loaded', 'message': 'CheXNet model weights not found'}), 503
         try:
             predictor = get_predictor('chexnet')
             result = predictor.predict_for_frontend(filepath)
-            print(f"✅ CheXNet Analysis Result:")
-            for r in result:
-                print(f"   - {r['disease']}: {r['confidence']}% ({r['status']})")
+            return _build_response(result, 'chexnet', filepath)
         except Exception as e:
             os.remove(filepath)
-            print(f"❌ CheXNet Error: {e}")
-            resp = jsonify(model_error_result('chexnet', str(e)))
-            resp.headers['X-Model-Used'] = 'chexnet'
-            return resp, 500
-        
-        # Clean up uploaded file
-        os.remove(filepath)
-        print("=" * 60 + "\n")
-        
-        resp = jsonify(result)
-        resp.headers['X-Model-Used'] = 'chexnet'
-        return resp
+            logger.error(f"[ERROR] processing_failed: CheXNet Error: {e}")
+            return jsonify({'error': 'processing_failed', 'message': str(e)}), 500
     
     except Exception as e:
         # Clean up on error
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], secure_filename(file.filename))
-        if os.path.exists(filepath):
+        if filepath and os.path.exists(filepath):
             os.remove(filepath)
         
-        app.logger.error(f"Analysis error: {traceback.format_exc()}")
+        logger.error(f"[ERROR] processing_failed: {traceback.format_exc()}")
         return jsonify({
-            'error': str(e)
+            'error': 'processing_failed',
+            'message': str(e)
         }), 500
 
 @app.route('/predict/all', methods=['POST'])

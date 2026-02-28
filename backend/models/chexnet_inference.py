@@ -8,6 +8,9 @@ import torchvision
 import torchvision.transforms as transforms
 from PIL import Image
 import numpy as np
+import logging
+
+logger = logging.getLogger("MediScan")
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'datasets', 'CheXNet'))
 
@@ -185,6 +188,7 @@ class CheXNetPredictor:
     def predict(self, image_path):
         try:
             image_tensor = self.preprocess_image(image_path)
+            logger.info(f"[CheXNet] Preprocessing complete | Input shape: {image_tensor.shape}")
             
             input_var = image_tensor.to(self.device)
             
@@ -226,7 +230,12 @@ class CheXNetPredictor:
                         })
             
             detected_diseases.sort(key=lambda x: x['probability'], reverse=True)
-            
+        
+            top_disease = detected_diseases[0]['disease'] if detected_diseases else 'None'
+            top_prob = detected_diseases[0]['probability'] if detected_diseases else 0.0
+            logger.info(f"[CheXNet] Raw probabilities: { {k: f'{v:.3f}' for k, v in sorted(results.items(), key=lambda x: x[1], reverse=True)[:5]} }")
+            logger.info(f"[CheXNet] Final prediction: {top_disease} | Confidence: {top_prob:.2%} | Status: {'detected' if detected_diseases else 'healthy'}")
+        
             return {
                 'model': 'CheXNet' + (' + Enhanced Pneumonia' if pneumonia_enhanced_prob else ''),
                 'description': 'Chest X-ray disease detection',

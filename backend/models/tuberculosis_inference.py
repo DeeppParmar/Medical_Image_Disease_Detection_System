@@ -4,6 +4,9 @@ import sys
 import numpy as np
 import cv2
 import pickle
+import logging
+
+logger = logging.getLogger("MediScan")
 
 # PyTorch imports for fine-tuned model
 try:
@@ -302,6 +305,7 @@ class TuberculosisPredictor:
         """Predict using PyTorch model."""
         image = Image.open(image_path).convert('RGB')
         image_tensor = self.pytorch_transform(image).unsqueeze(0).to(self.pytorch_device)
+        logger.info(f"[TuberculosisNet] Preprocessing complete | Input shape: {image_tensor.shape}")
         
         with torch.no_grad():
             outputs = self.pytorch_model(image_tensor)
@@ -312,6 +316,9 @@ class TuberculosisPredictor:
         
         mapping = {0: "Normal", 1: "Tuberculosis"}
         prediction = mapping[pred_class]
+        
+        logger.info(f"[TuberculosisNet] Raw probabilities: Normal={probs[0]:.3f}, TB={probs[1]:.3f}")
+        logger.info(f"[TuberculosisNet] Final prediction: {prediction} | Confidence: {confidence:.2%} | Status: {'tb_detected' if pred_class == 1 else 'normal'}")
         
         return {
             'model': 'TuberculosisNet (Fine-tuned PyTorch)',

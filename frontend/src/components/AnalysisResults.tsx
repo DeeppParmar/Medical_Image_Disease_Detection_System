@@ -1,5 +1,10 @@
-import { AlertTriangle, CheckCircle, Activity, Target, Brain, Info, Cpu, Bone, Heart, Stethoscope } from "lucide-react";
+import { useState } from "react";
+import { AlertTriangle, CheckCircle, Activity, Target, Brain, Info, Cpu, Bone, Heart, Stethoscope, ServerCrash, ScanLine, XCircle, Eye, EyeOff } from "lucide-react";
 import { Progress } from "./ui/progress";
+import { Alert, AlertTitle, AlertDescription } from "./ui/alert";
+import { Badge } from "./ui/badge";
+import { Button } from "./ui/button";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./ui/tooltip";
 
 export interface AnalysisResult {
   disease: string;
@@ -8,16 +13,26 @@ export interface AnalysisResult {
   description: string;
   regions?: string[];
   enhanced_detection?: boolean;
+  heatmap?: string | null;
+  warnings?: string[];
+}
+
+export interface ErrorState {
+  type: 'model_unavailable' | 'unsupported_scan' | 'processing_failed';
+  message: string;
 }
 
 interface AnalysisResultsProps {
   results: AnalysisResult[] | null;
   isAnalyzing: boolean;
   modelUsed?: string | null;
+  errorState?: ErrorState | null;
+  onReset?: () => void;
+  uploadedImageUrl?: string | null;
 }
 
 // Model-specific configurations
-const modelConfig: Record<string, { icon: any; color: string; title: string; subtitle: string }> = {
+const modelConfig: Record<string, { icon: React.ComponentType<React.SVGProps<SVGSVGElement>>; color: string; title: string; subtitle: string }> = {
   'CheXNet': {
     icon: Heart,
     color: 'text-red-500',
@@ -44,6 +59,14 @@ const modelConfig: Record<string, { icon: any; color: string; title: string; sub
   }
 };
 
+// ── Feature 4 — Model Transparency ──────────────────────────────────
+const MODEL_DETAILS: Record<string, { fullName: string; architecture: string; trainedOn: string; diseases: number }> = {
+  CheXNet: { fullName: "CheXNet", architecture: "DenseNet121", trainedOn: "NIH ChestX-ray14 (112,120 images)", diseases: 14 },
+  TuberculosisNet: { fullName: "TuberculosisNet", architecture: "DenseNet121 + Attention", trainedOn: "Montgomery & Shenzhen TB Dataset", diseases: 1 },
+  MURA: { fullName: "MURA Net", architecture: "DenseNet169 + Ensemble", trainedOn: "Stanford MURA Dataset (40,895 images)", diseases: 1 },
+  RSNA: { fullName: "RSNA Hemorrhage Net", architecture: "ResNet50", trainedOn: "RSNA Intracranial Hemorrhage Dataset", diseases: 1 },
+};
+
 const statusConfig = {
   healthy: {
     icon: CheckCircle,
@@ -68,11 +91,36 @@ const statusConfig = {
   },
 };
 
-const AnalysisResults = ({ results, isAnalyzing, modelUsed }: AnalysisResultsProps) => {
+// ── Feature 2 — Error card configs ─────────────────────────────────
+const errorCardConfig: Record<string, { icon: React.ComponentType<React.SVGProps<SVGSVGElement>>; borderColor: string; bgColor: string; iconColor: string }> = {
+  model_unavailable: {
+    icon: ServerCrash,
+    borderColor: 'border-amber-500/40',
+    bgColor: 'bg-amber-500/10',
+    iconColor: 'text-amber-400',
+  },
+  unsupported_scan: {
+    icon: ScanLine,
+    borderColor: 'border-blue-500/40',
+    bgColor: 'bg-blue-500/10',
+    iconColor: 'text-blue-400',
+  },
+  processing_failed: {
+    icon: XCircle,
+    borderColor: 'border-red-500/40',
+    bgColor: 'bg-red-500/10',
+    iconColor: 'text-red-400',
+  },
+};
+
+const AnalysisResults = ({ results, isAnalyzing, modelUsed, errorState, onReset, uploadedImageUrl }: AnalysisResultsProps) => {
+  const [showHeatmap, setShowHeatmap] = useState(false);
+
   // Get model-specific config
   const currentModelConfig = modelUsed ? modelConfig[modelUsed] : null;
   const ModelIcon = currentModelConfig?.icon || Brain;
 
+  // ── LOADING STATE ──────────────────────────────────────────────────
   if (isAnalyzing) {
     return (
       <div className="glass-card rounded-xl md:rounded-2xl p-6 md:p-8 shadow-xl">
@@ -95,6 +143,39 @@ const AnalysisResults = ({ results, isAnalyzing, modelUsed }: AnalysisResultsPro
     );
   }
 
+  // ── ERROR STATE (Feature 2) ────────────────────────────────────────
+  if (errorState) {
+    const errCfg = errorCardConfig[errorState.type] || errorCardConfig.processing_failed;
+    const ErrIcon = errCfg.icon;
+
+    return (
+      <div className={`glass-card rounded-xl md:rounded-2xl p-5 md:p-6 border ${errCfg.borderColor} shadow-xl`}>
+        <Alert className={`${errCfg.bgColor} border-none`}>
+          <ErrIcon className={`w-5 h-5 ${errCfg.iconColor}`} />
+          <AlertTitle className="text-sm md:text-base font-semibold ml-2">
+            {errorState.type === 'model_unavailable' && 'Model Not Available'}
+            {errorState.type === 'unsupported_scan' && 'Unsupported Scan Type'}
+            {errorState.type === 'processing_failed' && 'Processing Failed'}
+          </AlertTitle>
+          <AlertDescription className="text-xs md:text-sm text-muted-foreground mt-1 ml-2">
+            {errorState.message}
+          </AlertDescription>
+        </Alert>
+        {onReset && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="mt-4 w-full rounded-xl border-border/50"
+            onClick={onReset}
+          >
+            Try Again
+          </Button>
+        )}
+      </div>
+    );
+  }
+
+  // ── READY STATE ────────────────────────────────────────────────────
   if (!results) {
     return (
       <div className="glass-card rounded-xl md:rounded-2xl p-6 md:p-8 shadow-xl">
@@ -111,9 +192,14 @@ const AnalysisResults = ({ results, isAnalyzing, modelUsed }: AnalysisResultsPro
     );
   }
 
+  // ── RESULTS STATE ──────────────────────────────────────────────────
   const primaryResult = results[0];
   const config = statusConfig[primaryResult.status];
   const StatusIcon = config.icon;
+
+  const heatmapSrc = primaryResult.heatmap;
+  const modelDetails = modelUsed ? MODEL_DETAILS[modelUsed] : null;
+  const isRealModel = heatmapSrc !== null && heatmapSrc !== undefined;
 
   return (
     <div className="space-y-3 md:space-y-4">
@@ -129,7 +215,52 @@ const AnalysisResults = ({ results, isAnalyzing, modelUsed }: AnalysisResultsPro
           </div>
         </div>
       )}
-      
+
+      {/* ── Feature 1 — Grad-CAM Heatmap ───────────────────────────── */}
+      {heatmapSrc && uploadedImageUrl && (
+        <div
+          className="rounded-xl md:rounded-2xl overflow-hidden shadow-lg"
+          style={{
+            border: '2px solid transparent',
+            backgroundClip: 'padding-box',
+            backgroundImage: 'linear-gradient(var(--background), var(--background)), linear-gradient(135deg, #ef4444, #f59e0b, #ef4444)',
+            backgroundOrigin: 'border-box',
+          }}
+        >
+          <div className="relative aspect-square max-h-[280px] bg-black">
+            <img
+              src={showHeatmap ? `data:image/png;base64,${heatmapSrc}` : uploadedImageUrl}
+              alt={showHeatmap ? "Grad-CAM heatmap overlay" : "Original image"}
+              className="w-full h-full object-contain"
+            />
+          </div>
+          <div className="flex items-center justify-between p-3 bg-card/80 border-t border-border/50">
+            <Button
+              variant="outline"
+              size="sm"
+              className="rounded-lg text-xs gap-1.5"
+              onClick={() => setShowHeatmap(!showHeatmap)}
+            >
+              {showHeatmap ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+              {showHeatmap ? 'Show Original' : 'Show Heatmap'}
+            </Button>
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <div className="flex items-center gap-1.5 text-[10px] md:text-xs text-muted-foreground cursor-help">
+                    <Info className="w-3 h-3" />
+                    <span>AI Attention Map</span>
+                  </div>
+                </TooltipTrigger>
+                <TooltipContent side="top" className="max-w-[200px] text-xs">
+                  Red regions indicate areas the AI focused on most
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          </div>
+        </div>
+      )}
+
       <div className={`glass-card rounded-xl md:rounded-2xl p-4 md:p-6 border ${config.borderColor} shadow-xl`}>
         <div className="flex items-start gap-3 md:gap-4 mb-4 md:mb-6">
           <div className={`p-2.5 md:p-3 rounded-xl ${config.bgColor} shrink-0`}>
@@ -170,6 +301,48 @@ const AnalysisResults = ({ results, isAnalyzing, modelUsed }: AnalysisResultsPro
           </div>
         )}
       </div>
+
+      {/* ── Feature 4 — Model Transparency Info ──────────────────────── */}
+      {modelDetails && (
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-card/60 border border-border/40 cursor-help">
+                <span
+                  className={`w-2 h-2 rounded-full shrink-0 ${isRealModel ? 'bg-green-500' : 'bg-yellow-500'}`}
+                  title={isRealModel ? 'Model weights loaded' : 'Heuristic fallback'}
+                />
+                <Cpu className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+                <span className="text-xs text-muted-foreground truncate">
+                  Analyzed using {modelDetails.fullName} ({modelDetails.architecture})
+                </span>
+                <Info className="w-3 h-3 text-muted-foreground/60 shrink-0 ml-auto" />
+              </div>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="max-w-[260px] text-xs space-y-1.5 p-3">
+              <p className="font-semibold">{modelDetails.fullName}</p>
+              <p><span className="text-muted-foreground">Architecture:</span> {modelDetails.architecture}</p>
+              <p><span className="text-muted-foreground">Trained on:</span> {modelDetails.trainedOn}</p>
+              <p><span className="text-muted-foreground">Detectable conditions:</span> {modelDetails.diseases}</p>
+              <p className="text-muted-foreground pt-1 border-t border-border/50">
+                {isRealModel
+                  ? '● Green — Real model weights loaded'
+                  : '● Yellow — Heuristic fallback mode'}
+              </p>
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+      )}
+
+      {/* Image quality warnings */}
+      {primaryResult.warnings && primaryResult.warnings.includes('low_image_quality') && (
+        <div className="flex items-start gap-2 p-3 rounded-lg bg-amber-500/10 border border-amber-500/20">
+          <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+          <p className="text-[10px] md:text-xs text-amber-200/80">
+            Low image quality detected. Results may be less accurate.
+          </p>
+        </div>
+      )}
 
       {results.slice(1).map((result, index) => {
         const resultConfig = statusConfig[result.status];
