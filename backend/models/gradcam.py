@@ -316,8 +316,8 @@ def _isolate_top_regions(cam, max_blobs=MAX_REGIONS):
     """
     import scipy.ndimage as ndi
 
-    # Label connected components at 0.6 threshold
-    labeled, num_features = ndi.label(cam > 0.6)
+    # Label connected components at 0.30 threshold (accounting for power compression)
+    labeled, num_features = ndi.label(cam > 0.30)
 
     if num_features == 0:
         return cam
@@ -563,7 +563,7 @@ def _render_regions(orig_img, cam, regions=None):
 
         # Color gradient: yellow → orange → red based on intensity
         # BGR format
-        red = int(np.clip(255, 0, 255))
+        red = int(np.clip(255 * intensity, 0, 255))
         green = int(np.clip(255 * (1.0 - intensity * 0.8), 0, 255))
         blue = 0
         color = (blue, green, red)

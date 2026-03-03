@@ -272,8 +272,8 @@ class MURAPredictor:
             is_abnormal = combined_prob > 0.40
             
             # Confidence based on distance from threshold
-            confidence = abs(combined_prob - 0.40) * 2.0
-            confidence = 0.55 + min(0.45, confidence)
+            confidence = abs(combined_prob - 0.40) * 2.5  # Scale up slightly to reach 100% at extremes
+            confidence = min(1.0, confidence)
             
             print(f"  🦴 Bone Analysis: DL={dl_probability:.3f}, Edge={edge_score:.3f}, "
                   f"Texture={texture_score:.3f}, Contrast={contrast_score:.3f}, "

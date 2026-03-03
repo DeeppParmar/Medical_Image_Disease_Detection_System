@@ -375,7 +375,7 @@ class TuberculosisPredictor:
                         
                         # TB X-rays often show more varied intensity
                         # This is a very rough heuristic
-                        tb_score = min(0.5, std_intensity * 1.5)
+                        tb_score = std_intensity * 1.5
                         normal_score = 1.0 - tb_score
                         
                         return {
