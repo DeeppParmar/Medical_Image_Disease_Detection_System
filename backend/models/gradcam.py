@@ -55,8 +55,8 @@ MAX_REGIONS = 3          # Maximum number of bounding-box regions to show (resto
 BBOX_THICKNESS = 2       # Bounding box line thickness
 ASYMMETRY_BOOST = 0.15   # Boost factor for dominant-side emphasis
 CONTOUR_NOISE_AREA = 400 # Remove activation blobs smaller than this
-PERCENTILE_CUTOFF = 70   # Keep only top 30% activations (lowered for more coverage)
-SPREAD_POWER = 2.5       # Power compression (2.5 = stronger center reduction)
+PERCENTILE_CUTOFF = 65   # Keep only top 35% activations (lowered for target 20-25% coverage)
+SPREAD_POWER = 2.0       # Power compression (2.0 = softer center reduction to allow spread)
 EDGE_DECAY_SIGMA_RATIO = 1/3  # Gaussian edge decay width ratio
 MAX_COVERAGE_RATIO = 0.65     # Reject heatmaps covering >65% of lung area (was 0.50)
 
