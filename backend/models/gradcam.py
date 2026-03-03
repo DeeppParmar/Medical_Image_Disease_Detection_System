@@ -55,7 +55,7 @@ MAX_REGIONS = 3          # Maximum number of bounding-box regions to show (resto
 BBOX_THICKNESS = 2       # Bounding box line thickness
 ASYMMETRY_BOOST = 0.15   # Boost factor for dominant-side emphasis
 CONTOUR_NOISE_AREA = 400 # Remove activation blobs smaller than this
-PERCENTILE_CUTOFF = 75   # Keep only top 25% activations (was 82 - too tight)
+PERCENTILE_CUTOFF = 70   # Keep only top 30% activations (lowered for more coverage)
 SPREAD_POWER = 2.5       # Power compression (2.5 = stronger center reduction)
 EDGE_DECAY_SIGMA_RATIO = 1/3  # Gaussian edge decay width ratio
 MAX_COVERAGE_RATIO = 0.65     # Reject heatmaps covering >65% of lung area (was 0.50)
@@ -509,10 +509,12 @@ def _extract_regions(cam, orig_h, orig_w, min_area=MIN_CONTOUR_AREA,
     max_regions (default 3) largest/strongest regions to avoid clutter.
     """
     cam_uint8 = (cam * 255).astype(np.uint8)
-    _, binary = cv2.threshold(cam_uint8, int(0.35 * 255), 255, cv2.THRESH_BINARY)
+    otsu_val, _ = cv2.threshold(cam_uint8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    manual_thresh = int(otsu_val * 0.60)  # softer threshold: 60% of OTSU
+    _, binary = cv2.threshold(cam_uint8, manual_thresh, 255, cv2.THRESH_BINARY)
 
     # Morphological cleanup: close gaps, remove noise
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
     binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
     binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
 
