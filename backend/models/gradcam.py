@@ -45,20 +45,20 @@ except ImportError:
 BLEND_ALPHA = 0.78       # Original image weight (keep X-ray visible)
 BLEND_BETA = 0.22        # Heatmap weight (subtle, not overpowering)
 SMOOTH_KSIZE = 11        # Gaussian kernel for initial CAM smoothing (reduced!)
-SMOOTH_SIGMA = 4         # Gaussian sigma (lower = preserve separation)
+SMOOTH_SIGMA = 5         # Gaussian sigma (was 4, increased for smoother merge)
 LUNG_MASK_THRESH = 25    # Intensity threshold for lung mask generation
 LUNG_MASK_BLUR = 25      # Gaussian blur kernel for soft lung mask edges
 SOFT_THRESH_POWER = 3.0  # Power for soft thresholding (higher = sharper)
 SOFT_THRESH_KNEE = 0.35  # Knee point: below this, activations fade rapidly
 MIN_CONTOUR_AREA = 500   # Minimum pixel area for region bounding boxes
-MAX_REGIONS = 2          # Maximum number of bounding-box regions to show
+MAX_REGIONS = 3          # Maximum number of bounding-box regions to show (restored to 3)
 BBOX_THICKNESS = 2       # Bounding box line thickness
 ASYMMETRY_BOOST = 0.15   # Boost factor for dominant-side emphasis
 CONTOUR_NOISE_AREA = 400 # Remove activation blobs smaller than this
-PERCENTILE_CUTOFF = 82   # Keep only top 18% activations (sharper focus)
+PERCENTILE_CUTOFF = 75   # Keep only top 25% activations (was 82 - too tight)
 SPREAD_POWER = 2.5       # Power compression (2.5 = stronger center reduction)
 EDGE_DECAY_SIGMA_RATIO = 1/3  # Gaussian edge decay width ratio
-MAX_COVERAGE_RATIO = 0.50     # Reject heatmaps covering >50% of lung area
+MAX_COVERAGE_RATIO = 0.65     # Reject heatmaps covering >65% of lung area (was 0.50)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -216,11 +216,7 @@ def _generate_lung_mask(orig_img):
 
 def _apply_edge_decay(heatmap, sigma_ratio=EDGE_DECAY_SIGMA_RATIO):
     """
-    Apply smooth Gaussian edge decay to prevent full-lung highlighting.
-
-    Uses a 2D Gaussian centered on the image to naturally attenuate
-    activations near the borders. Unlike a hard elliptical mask, this
-    produces a continuous falloff that looks natural.
+    Apply smooth Gaussian edge decay + explicit border penalty.
     """
     h, w = heatmap.shape
     y, x = np.ogrid[:h, :w]
@@ -228,7 +224,20 @@ def _apply_edge_decay(heatmap, sigma_ratio=EDGE_DECAY_SIGMA_RATIO):
     center_mask = np.exp(
         -((x - w / 2) ** 2 + (y - h / 2) ** 2) / (2 * sigma ** 2)
     ).astype(np.float32)
-    return heatmap * center_mask
+
+    # Explicit region constraint: suppress outer 10%
+    pad_y, pad_x = max(1, int(h * 0.10)), max(1, int(w * 0.10))
+    roi_mask = np.full((h, w), 0.2, dtype=np.float32)  # 80% penalty outside ROI
+    roi_mask[pad_y:h-pad_y, pad_x:w-pad_x] = 1.0
+    roi_mask = cv2.GaussianBlur(roi_mask, (15, 15), 0)
+
+    # Hard edge penalty: reduce weight within 10px of true boundary
+    roi_mask[:10, :] *= 0.1
+    roi_mask[-10:, :] *= 0.1
+    roi_mask[:, :10] *= 0.1
+    roi_mask[:, -10:] *= 0.1
+
+    return heatmap * center_mask * roi_mask
 
 
 def _remove_small_blobs(cam, min_area=CONTOUR_NOISE_AREA):
