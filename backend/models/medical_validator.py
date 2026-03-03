@@ -223,7 +223,7 @@ def _compute_heuristic(bgr_img: np.ndarray) -> dict:
     bright_ratio = float((gray > 240).mean())
     dark_ratio = float((gray < 15).mean())
     flags["not_overexposed"] = bright_ratio < 0.35
-    flags["not_underexposed"] = dark_ratio < 0.55  # Relaxed for CT (large dark areas)
+    flags["not_underexposed"] = dark_ratio < 0.40  # Strict for X-rays; CT uses fast-path below
     details["bright_pixel_ratio"] = round(bright_ratio, 3)
     details["dark_pixel_ratio"] = round(dark_ratio, 3)
 
@@ -267,6 +267,31 @@ def _compute_heuristic(bgr_img: np.ndarray) -> dict:
     lbp_variance = float(lbp_map.var())
     flags["not_natural_scene"] = lbp_variance < 2800
     details["lbp_variance"] = round(lbp_variance, 1)
+
+    # --- CT FAST-PATH ---
+    # CT scans are square, grayscale, with dark corners and adequate dynamic range.
+    # They legitimately fail LBP (large uniform dark regions) and dark_ratio checks.
+    # Detect and accept them early to avoid low-confidence warnings.
+    aspect = w / h if h > 0 else 1.0
+    if 0.95 <= aspect <= 1.05 and flags.get("grayscale_dominant", False):
+        # Check dark corners: sample 10% corner regions
+        corner_size = max(h // 10, 8)
+        corners = np.concatenate([
+            gray[:corner_size, :corner_size].ravel(),       # top-left
+            gray[:corner_size, -corner_size:].ravel(),      # top-right
+            gray[-corner_size:, :corner_size].ravel(),      # bottom-left
+            gray[-corner_size:, -corner_size:].ravel(),     # bottom-right
+        ])
+        dark_corner_ratio = float((corners < 30).mean())
+        if dark_corner_ratio >= 0.75 and dynamic_range > 40:
+            details["ct_fast_path"] = True
+            details["dark_corner_ratio"] = round(dark_corner_ratio, 3)
+            return {
+                "score": 0.82, "passed": True,
+                "hard_reject": None,
+                "flags": flags, "details": details,
+                "ct_detected": True
+            }
 
     # --- HARD REJECT COMBOS ---
     # Both colorful AND complex texture = definitely not X-ray
