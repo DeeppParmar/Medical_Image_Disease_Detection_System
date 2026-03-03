@@ -32,6 +32,7 @@ from models.tuberculosis_inference import TuberculosisPredictor
 from models.rsna_inference import RSNPredictor
 from models.unet_inference import UNetPredictor
 from models.gradcam import generate_gradcam, generate_gradcam_full
+from models.medical_validator import validate_medical_image
 
 app = Flask(__name__)
 
@@ -654,10 +655,41 @@ def analyze():
                 if gray is not None:
                     lap_var = cv2.Laplacian(gray, cv2.CV_64F).var()
                     if lap_var < 50:
+
                         response_warnings.append('low_image_quality')
                         logger.warning(f"[VALIDATION] Low image quality detected | laplacian_var={lap_var:.1f}")
             except Exception:
                 pass  # non-blocking
+
+            # 5. Medical image validation — reject non-medical images
+            try:
+                bgr_img = cv2.imread(filepath)
+                if bgr_img is not None:
+                    is_dcm = ext == 'dcm'
+                    validation = validate_medical_image(bgr_img, is_dicom=is_dcm)
+                    if not validation.get('valid', True):
+                        safe_remove(filepath)
+                        logger.warning(
+                            f"[VALIDATION] Image rejected as non-medical | "
+                            f"heuristic={validation.get('heuristic_score')} | "
+                            f"cnn={validation.get('cnn_probability')} | "
+                            f"reason={validation.get('sub_reason')}"
+                        )
+                        return jsonify({
+                            'error': 'not_medical_image',
+                            'status': 'rejected',
+                            'reason': validation.get('reason', 'non_medical_image'),
+                            'message': validation.get('message', 'Uploaded image does not appear to be a valid medical scan.'),
+                            'confidence': validation.get('confidence', 0.0),
+                            'heuristic_score': validation.get('heuristic_score'),
+                            'cnn_probability': validation.get('cnn_probability'),
+                            'sub_reason': validation.get('sub_reason')
+                        }), 422
+                    if validation.get('low_confidence_warning'):
+                        response_warnings.append('low_medical_confidence')
+                        logger.warning(f"[VALIDATION] Low medical confidence — accepted with warning")
+            except Exception as val_err:
+                logger.warning(f"[VALIDATION] Medical validator error (non-blocking): {val_err}")
 
         scan_type = (request.form.get('scan_type') or request.args.get('scan_type') or 'auto').strip().lower()
         requested_model = (request.form.get('model') or request.args.get('model') or '').strip().lower()

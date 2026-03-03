@@ -7,6 +7,11 @@ import torch.nn.functional as F
 import torchvision.transforms as transforms
 from PIL import Image
 import numpy as np
+import logging
+
+logger = logging.getLogger("MediScan")
+
+from models.confidence_interpreter import enrich_results
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'datasets', 'UNet'))
 
@@ -143,24 +148,30 @@ class UNetPredictor:
             pct = float(raw_result.get('disease_percentage', 0.0))
             has_disease = bool(raw_result.get('has_disease', False))
             confidence = int(min(max(pct, 0.0), 100.0))
+            total_px = raw_result.get('total_pixels', 0)
+            disease_px = raw_result.get('disease_pixels', 0)
 
             if has_disease:
                 status = 'critical' if pct > 20.0 else 'warning'
-                return [{
+                return enrich_results([{
                     'disease': 'Abnormal Region (Segmentation)',
                     'confidence': confidence,
                     'status': status,
-                    'description': 'Segmented abnormal region detected. This indicates the model found a notable area that differs from surrounding tissue.',
-                    'regions': []
-                }]
+                    'description': f'Segmented abnormal region detected covering {pct:.1f}% of the scan ({disease_px:,}/{total_px:,} pixels). This indicates the model found a notable area that differs from surrounding tissue.',
+                    'regions': [],
+                    'segmentation_coverage_pct': round(pct, 2),
+                    'primary_finding': True
+                }])
 
-            return [{
+            return enrich_results([{
                 'disease': 'No Significant Abnormal Region',
                 'confidence': int(100 - confidence),
                 'status': 'healthy',
-                'description': 'Segmentation model did not find a large abnormal region above threshold.',
-                'regions': []
-            }]
+                'description': f'Segmentation model did not find a large abnormal region above threshold. Coverage: {pct:.1f}%.',
+                'regions': [],
+                'segmentation_coverage_pct': round(pct, 2),
+                'primary_finding': True
+            }])
 
         except Exception as e:
             return [{

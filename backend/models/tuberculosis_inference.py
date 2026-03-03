@@ -481,6 +481,12 @@ class TuberculosisPredictor:
                     'regions': []
                 })
             
+            # Tag primary vs secondary for frontend display
+            for i, r in enumerate(analysis_results):
+                if i == 0:
+                    r['primary_finding'] = True
+                else:
+                    r['secondary'] = True
             return enrich_results(analysis_results)
         
         except Exception as e:

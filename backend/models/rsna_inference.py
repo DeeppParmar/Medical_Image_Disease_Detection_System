@@ -105,13 +105,15 @@ class RSNPredictor:
                     'confidence': int(prob * 100),
                     'status': status,
                     'description': 'Possible intracranial hemorrhage detected. Seek urgent medical evaluation by a qualified clinician.',
-                    'regions': ['Intracranial']
+                    'regions': ['Intracranial'],
+                    'primary_finding': True
                 }, {
                     'disease': 'Normal Scan',
                     'confidence': int((1.0 - prob) * 100),
                     'status': 'healthy',
                     'description': 'Some features may still appear within normal limits.',
-                    'regions': []
+                    'regions': [],
+                    'secondary': True
                 }])
 
             return enrich_results([{

@@ -343,7 +343,8 @@ class MURAPredictor:
                     'status': status,
                     'description': description,
                     'regions': regions,
-                    'prediction': 'POSITIVE'
+                    'prediction': 'POSITIVE',
+                    'primary_finding': True
                 }
                 secondary = {
                     'disease': 'Normal Bone Tissue',
@@ -351,7 +352,8 @@ class MURAPredictor:
                     'status': 'healthy',
                     'description': 'Some bone regions appear within normal limits.',
                     'regions': [],
-                    'prediction': 'PARTIAL'
+                    'prediction': 'PARTIAL',
+                    'secondary': True
                 }
                 return enrich_results([primary, secondary])
 

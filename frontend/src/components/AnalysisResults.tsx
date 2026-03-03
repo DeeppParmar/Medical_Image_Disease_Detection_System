@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { AlertTriangle, CheckCircle, Activity, Target, Brain, Info, Cpu, Bone, Heart, Stethoscope, ServerCrash, ScanLine, XCircle, Eye, Crosshair, Box, Layers } from "lucide-react";
+import { AlertTriangle, CheckCircle, Activity, Target, Brain, Info, Cpu, Bone, Heart, Stethoscope, ServerCrash, ScanLine, XCircle, Eye, Crosshair, Box, Layers, ShieldAlert, HelpCircle, ChevronDown, ChevronUp } from "lucide-react";
 import { Progress } from "./ui/progress";
 import { Alert, AlertTitle, AlertDescription } from "./ui/alert";
 import { Badge } from "./ui/badge";
@@ -27,12 +27,23 @@ export interface AnalysisResult {
   heatmap_regions?: HeatmapRegion[];
   warnings?: string[];
   confidence_level?: string;
+  likelihood_label?: string;
   final_assessment?: string;
+  uncertainty_range?: [number, number];
+  uncertainty_pct?: number;
+  ai_disclaimer?: string;
+  primary_finding?: boolean;
+  secondary?: boolean;
 }
 
 export interface ErrorState {
-  type: 'model_unavailable' | 'unsupported_scan' | 'processing_failed';
+  type: 'model_unavailable' | 'unsupported_scan' | 'processing_failed' | 'not_medical_image';
   message: string;
+  validationDetails?: {
+    heuristicScore?: number | null;
+    cnnProbability?: number | null;
+    subReason?: string | null;
+  };
 }
 
 interface AnalysisResultsProps {
@@ -104,7 +115,7 @@ const statusConfig = {
   },
 };
 
-// ── Feature 2 — Error card configs ─────────────────────────────────
+// ── Error card configs (including not_medical_image) ────────────────
 const errorCardConfig: Record<string, { icon: React.ComponentType<React.SVGProps<SVGSVGElement>>; borderColor: string; bgColor: string; iconColor: string }> = {
   model_unavailable: {
     icon: ServerCrash,
@@ -124,11 +135,19 @@ const errorCardConfig: Record<string, { icon: React.ComponentType<React.SVGProps
     bgColor: 'bg-red-500/10',
     iconColor: 'text-red-400',
   },
+  not_medical_image: {
+    icon: ShieldAlert,
+    borderColor: 'border-amber-500/40',
+    bgColor: 'bg-amber-950/30',
+    iconColor: 'text-amber-400',
+  },
 };
 
 const AnalysisResults = ({ results, isAnalyzing, modelUsed, errorState, onReset, uploadedImageUrl }: AnalysisResultsProps) => {
   // Heatmap view mode: 0=original, 1=overlay, 2=threshold, 3=bbox
   const [heatmapMode, setHeatmapMode] = useState(0);
+  const [showWhySection, setShowWhySection] = useState(false);
+  const [showValidationDetails, setShowValidationDetails] = useState(false);
 
   // Get model-specific config
   const currentModelConfig = modelUsed ? modelConfig[modelUsed] : null;
@@ -157,10 +176,70 @@ const AnalysisResults = ({ results, isAnalyzing, modelUsed, errorState, onReset,
     );
   }
 
-  // ── ERROR STATE (Feature 2) ────────────────────────────────────────
+  // ── ERROR STATE ────────────────────────────────────────────────────
   if (errorState) {
     const errCfg = errorCardConfig[errorState.type] || errorCardConfig.processing_failed;
     const ErrIcon = errCfg.icon;
+
+    // Special rendering for medical validation rejection
+    if (errorState.type === 'not_medical_image') {
+      return (
+        <div className={`glass-card rounded-xl md:rounded-2xl p-5 md:p-6 border ${errCfg.borderColor} shadow-xl`}>
+          <div className="flex items-start gap-3 mb-4">
+            <div className="p-2.5 rounded-xl bg-amber-950/40 shrink-0">
+              <ShieldAlert className="w-6 h-6 text-amber-400" />
+            </div>
+            <div className="flex-1">
+              <h3 className="font-display font-semibold text-base md:text-lg text-amber-200 mb-1">Image Not Recognized</h3>
+              <p className="text-xs md:text-sm text-slate-300 leading-relaxed">{errorState.message}</p>
+            </div>
+          </div>
+
+          <div className="p-3 rounded-lg bg-amber-950/20 border border-amber-500/15 mb-4">
+            <p className="text-xs text-slate-400 leading-relaxed">
+              <span className="font-medium text-amber-300">Supported formats:</span> Chest X-ray, Bone X-ray, CT scan (PNG, JPG, JPEG, DICOM)
+            </p>
+          </div>
+
+          {/* Validation details — collapsible debug info */}
+          {errorState.validationDetails && (
+            <div className="mb-4">
+              <button
+                onClick={() => setShowValidationDetails(!showValidationDetails)}
+                className="flex items-center gap-1.5 text-[10px] text-muted-foreground/60 hover:text-muted-foreground transition-colors"
+              >
+                {showValidationDetails ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                Validation Details
+              </button>
+              {showValidationDetails && (
+                <div className="mt-2 p-2 rounded-md bg-card/40 border border-border/30 text-[10px] font-mono text-muted-foreground/70 space-y-0.5">
+                  {errorState.validationDetails.heuristicScore != null && (
+                    <p>Heuristic Score: {errorState.validationDetails.heuristicScore}</p>
+                  )}
+                  {errorState.validationDetails.cnnProbability != null && (
+                    <p>CNN Probability: {errorState.validationDetails.cnnProbability}</p>
+                  )}
+                  {errorState.validationDetails.subReason && (
+                    <p>Reason: {errorState.validationDetails.subReason}</p>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {onReset && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="w-full rounded-xl border-amber-500/30 text-amber-200 hover:bg-amber-950/40"
+              onClick={onReset}
+            >
+              Upload a Different Image
+            </Button>
+          )}
+        </div>
+      );
+    }
 
     return (
       <div className={`glass-card rounded-xl md:rounded-2xl p-5 md:p-6 border ${errCfg.borderColor} shadow-xl`}>
@@ -214,6 +293,23 @@ const AnalysisResults = ({ results, isAnalyzing, modelUsed, errorState, onReset,
   const heatmapSrc = primaryResult.heatmap;
   const modelDetails = modelUsed ? MODEL_DETAILS[modelUsed] : null;
   const isRealModel = heatmapSrc !== null && heatmapSrc !== undefined;
+
+  // Determine display label — use likelihood_label if available (safer)
+  const displayLabel = (() => {
+    if (primaryResult.likelihood_label) {
+      if (primaryResult.status === 'healthy') return 'Normal';
+      return primaryResult.likelihood_label;
+    }
+    // Fallback for old format
+    if (primaryResult.confidence_level) {
+      if (primaryResult.status === 'healthy') return 'Normal';
+      if (primaryResult.confidence_level === 'High') return 'High Likelihood (AI-based)';
+      if (primaryResult.confidence_level === 'Moderate') return 'Moderate Likelihood (AI-based)';
+      if (primaryResult.confidence_level === 'Low') return 'Low Confidence';
+      return 'Inconclusive';
+    }
+    return primaryResult.status === 'healthy' ? 'Normal' : primaryResult.status === 'warning' ? 'Moderate' : 'High Likelihood';
+  })();
 
   return (
     <div className="space-y-3 md:space-y-4">
@@ -306,19 +402,14 @@ const AnalysisResults = ({ results, isAnalyzing, modelUsed, errorState, onReset,
           </div>
           <div className="flex-1 min-w-0">
             <div className="flex flex-wrap items-center gap-2 mb-1 md:mb-2">
-              <h3 className="font-display font-bold text-lg md:text-xl">{primaryResult.disease}</h3>
+              <h3 className="font-display font-bold text-lg md:text-xl">
+                {primaryResult.status !== 'healthy'
+                  ? `AI Suggests Possible ${primaryResult.disease}`
+                  : primaryResult.disease
+                }
+              </h3>
               <span className={`px-2 py-0.5 rounded-full text-[10px] md:text-xs font-medium ${config.bgColor} ${config.color} whitespace-nowrap`}>
-                {primaryResult.confidence_level
-                  ? (primaryResult.status === 'healthy'
-                    ? 'Normal'
-                    : primaryResult.confidence_level === 'High'
-                      ? 'High Risk'
-                      : primaryResult.confidence_level === 'Moderate'
-                        ? 'Moderate Risk'
-                        : primaryResult.confidence_level === 'Low'
-                          ? 'Low Confidence'
-                          : 'Unlikely')
-                  : (primaryResult.status === 'healthy' ? 'Normal' : primaryResult.status === 'warning' ? 'Moderate' : 'High Risk')}
+                {displayLabel}
               </span>
             </div>
             <p className="text-xs md:text-sm text-muted-foreground leading-relaxed">{primaryResult.description}</p>
@@ -330,17 +421,30 @@ const AnalysisResults = ({ results, isAnalyzing, modelUsed, errorState, onReset,
           </div>
         </div>
 
+        {/* Confidence with uncertainty band */}
         <div className="space-y-2">
           <div className="flex items-center justify-between text-xs md:text-sm">
             <span className="text-muted-foreground">Confidence</span>
             <span className="font-semibold">
               {primaryResult.confidence}%
+              {primaryResult.uncertainty_range && (
+                <span className="text-muted-foreground font-normal ml-1">
+                  (±{primaryResult.uncertainty_pct || 5}%)
+                </span>
+              )}
               {primaryResult.confidence_level && (
                 <span className="text-muted-foreground font-normal ml-1">({primaryResult.confidence_level})</span>
               )}
             </span>
           </div>
           <Progress value={primaryResult.confidence} className="h-2 md:h-3" />
+          {/* Uncertainty range indicator */}
+          {primaryResult.uncertainty_range && (
+            <div className="flex justify-between text-[9px] text-muted-foreground/50 px-0.5">
+              <span>{primaryResult.uncertainty_range[0]}%</span>
+              <span>{primaryResult.uncertainty_range[1]}%</span>
+            </div>
+          )}
         </div>
 
         {primaryResult.regions && primaryResult.regions.length > 0 && (
@@ -359,6 +463,79 @@ const AnalysisResults = ({ results, isAnalyzing, modelUsed, errorState, onReset,
           </div>
         )}
       </div>
+
+      {/* ── "Why this prediction?" Section ─────────────────────────── */}
+      {primaryResult.status !== 'healthy' && (heatmapSrc || (primaryResult.heatmap_regions && primaryResult.heatmap_regions.length > 0)) && (
+        <div className="glass-card rounded-xl md:rounded-2xl p-4 md:p-5 border border-primary/20 shadow-lg">
+          <button
+            onClick={() => setShowWhySection(!showWhySection)}
+            className="flex items-center justify-between w-full text-left"
+          >
+            <div className="flex items-center gap-2">
+              <HelpCircle className="w-4 h-4 text-primary" />
+              <span className="text-xs md:text-sm font-semibold">Why this prediction?</span>
+            </div>
+            {showWhySection ? <ChevronUp className="w-4 h-4 text-muted-foreground" /> : <ChevronDown className="w-4 h-4 text-muted-foreground" />}
+          </button>
+
+          {showWhySection && (
+            <div className="mt-3 space-y-3">
+              {/* Highlighted regions info */}
+              {primaryResult.heatmap_regions && primaryResult.heatmap_regions.length > 0 && (
+                <div className="p-3 rounded-lg bg-secondary/40 border border-border/30">
+                  <p className="text-xs font-medium mb-2 text-muted-foreground">AI Attention Regions</p>
+                  <div className="space-y-1.5">
+                    {primaryResult.heatmap_regions.map((region, i) => (
+                      <div key={i} className="flex items-center justify-between text-xs">
+                        <span className="text-muted-foreground">Region {i + 1}</span>
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] text-muted-foreground/70">
+                            {region.w}×{region.h}px
+                          </span>
+                          <span className={`font-medium ${region.intensity > 0.7 ? 'text-destructive' : region.intensity > 0.4 ? 'text-warning' : 'text-muted-foreground'}`}>
+                            {(region.intensity * 100).toFixed(0)}% intensity
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Pattern detected */}
+              <div className="p-3 rounded-lg bg-secondary/40 border border-border/30">
+                <p className="text-xs font-medium mb-1 text-muted-foreground">Pattern Detected</p>
+                <p className="text-xs text-muted-foreground/80 leading-relaxed">
+                  The AI identified {primaryResult.heatmap_regions?.length || 0} region(s) of interest using Grad-CAM++ attention mapping.
+                  {primaryResult.heatmap_regions && primaryResult.heatmap_regions.length > 0 && (
+                    <> The strongest activation ({(Math.max(...primaryResult.heatmap_regions.map(r => r.intensity)) * 100).toFixed(0)}%) suggests
+                      localized abnormality patterns consistent with {primaryResult.disease.toLowerCase()} indicators.</>
+                  )}
+                </p>
+              </div>
+
+              {/* Model confidence + reliability */}
+              <div className="p-3 rounded-lg bg-secondary/40 border border-border/30">
+                <p className="text-xs font-medium mb-1 text-muted-foreground">Model Confidence & Reliability</p>
+                <div className="flex items-center gap-3 text-xs">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-muted-foreground">Confidence:</span>
+                    <span className="font-semibold">{primaryResult.confidence}%</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-muted-foreground">Uncertainty:</span>
+                    <span className="font-medium">±{primaryResult.uncertainty_pct || 5}%</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-muted-foreground">Regions:</span>
+                    <span className="font-medium">{primaryResult.heatmap_regions?.length || 0}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ── Feature 4 — Model Transparency Info ──────────────────────── */}
       {modelDetails && (
@@ -402,33 +579,59 @@ const AnalysisResults = ({ results, isAnalyzing, modelUsed, errorState, onReset,
         </div>
       )}
 
-      {results.slice(1).map((result, index) => {
-        const resultConfig = statusConfig[result.status];
-        const ResultIcon = resultConfig.icon;
+      {/* Low medical confidence warning */}
+      {primaryResult.warnings && primaryResult.warnings.includes('low_medical_confidence') && (
+        <div className="flex items-start gap-2 p-3 rounded-lg bg-amber-500/10 border border-amber-500/20">
+          <ShieldAlert className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+          <p className="text-[10px] md:text-xs text-amber-200/80">
+            Image passed validation with borderline confidence. Ensure this is a proper medical scan for best results.
+          </p>
+        </div>
+      )}
 
-        return (
-          <div key={index} className="glass-card rounded-lg md:rounded-xl p-3 md:p-4 shadow-lg">
-            <div className="flex items-center gap-2 md:gap-3">
-              <div className={`p-1.5 md:p-2 rounded-lg ${resultConfig.bgColor} shrink-0`}>
-                <ResultIcon className={`w-3.5 h-3.5 md:w-4 md:h-4 ${resultConfig.color}`} />
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center justify-between gap-2 mb-1.5 md:mb-2">
-                  <span className="font-medium text-xs md:text-sm truncate">{result.disease}</span>
-                  <span className="text-xs md:text-sm text-muted-foreground shrink-0">{result.confidence}%</span>
+      {/* Secondary results (top 3 multi-disease) */}
+      {results.length > 1 && (
+        <div className="space-y-2">
+          <p className="text-[10px] md:text-xs font-medium text-muted-foreground px-1">Secondary Possibilities</p>
+          {results.slice(1).map((result, index) => {
+            const resultConfig = statusConfig[result.status];
+            const ResultIcon = resultConfig.icon;
+
+            return (
+              <div key={index} className="glass-card rounded-lg md:rounded-xl p-3 md:p-4 shadow-lg">
+                <div className="flex items-center gap-2 md:gap-3">
+                  <div className={`p-1.5 md:p-2 rounded-lg ${resultConfig.bgColor} shrink-0`}>
+                    <ResultIcon className={`w-3.5 h-3.5 md:w-4 md:h-4 ${resultConfig.color}`} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center justify-between gap-2 mb-1.5 md:mb-2">
+                      <span className="font-medium text-xs md:text-sm truncate">{result.disease}</span>
+                      <span className="text-xs md:text-sm text-muted-foreground shrink-0">
+                        {result.confidence}%
+                        {result.uncertainty_pct && (
+                          <span className="text-[10px] text-muted-foreground/60 ml-0.5">±{result.uncertainty_pct}%</span>
+                        )}
+                      </span>
+                    </div>
+                    <Progress value={result.confidence} className="h-1.5 md:h-2" />
+                  </div>
                 </div>
-                <Progress value={result.confidence} className="h-1.5 md:h-2" />
               </div>
-            </div>
-          </div>
-        );
-      })}
+            );
+          })}
+        </div>
+      )}
 
-      <div className="flex items-start gap-2 md:gap-3 p-3 md:p-4 rounded-lg md:rounded-xl bg-primary/5 border border-primary/20">
-        <Info className="w-4 h-4 md:w-5 md:h-5 text-primary flex-shrink-0 mt-0.5" />
-        <p className="text-[10px] md:text-xs text-muted-foreground leading-relaxed">
-          This AI analysis is designed for preliminary screening in low-resource healthcare settings. For research and educational purposes only. Always consult a qualified healthcare professional for medical diagnosis and treatment.
-        </p>
+      {/* ── AI Disclaimer Banner (always visible) ──────────────────── */}
+      <div className="flex items-start gap-2 md:gap-3 p-3 md:p-4 rounded-lg md:rounded-xl bg-amber-500/5 border border-amber-500/20">
+        <ShieldAlert className="w-4 h-4 md:w-5 md:h-5 text-amber-400 flex-shrink-0 mt-0.5" />
+        <div>
+          <p className="text-[10px] md:text-xs font-semibold text-amber-300 mb-1">AI-Assisted Analysis — Not a Medical Diagnosis</p>
+          <p className="text-[10px] md:text-xs text-muted-foreground leading-relaxed">
+            {primaryResult.ai_disclaimer || "This is an AI-assisted analysis, not a medical diagnosis. Always consult a qualified healthcare professional."}
+            {' '}Results should be interpreted by a qualified radiologist as part of a comprehensive clinical evaluation.
+          </p>
+        </div>
       </div>
     </div>
   );

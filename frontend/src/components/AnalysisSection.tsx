@@ -89,6 +89,19 @@ const AnalysisSection = () => {
           });
           return;
         }
+        // Medical image validation rejection
+        if (response.status === 422 && (errorField === 'not_medical_image' || data?.reason === 'non_medical_image')) {
+          setErrorState({
+            type: 'not_medical_image',
+            message: data?.message || 'Uploaded image does not appear to be a valid medical scan. Please upload an X-ray, CT scan, or MRI.',
+            validationDetails: {
+              heuristicScore: data?.heuristic_score ?? null,
+              cnnProbability: data?.cnn_probability ?? null,
+              subReason: data?.sub_reason ?? null,
+            },
+          });
+          return;
+        }
         if (response.status === 415 || response.status === 422 || errorField === 'unsupported_scan' || errorField === 'resolution_too_low') {
           setErrorState({
             type: 'unsupported_scan',

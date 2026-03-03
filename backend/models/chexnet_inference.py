@@ -336,7 +336,14 @@ class CheXNetPredictor:
                         })
             
             # Ensure we have at least 1 result, max 3
-            return enrich_results(analysis_results[:3])
+            final_results = analysis_results[:3]
+            # Tag primary vs secondary for frontend display
+            for i, r in enumerate(final_results):
+                if i == 0:
+                    r['primary_finding'] = True
+                else:
+                    r['secondary'] = True
+            return enrich_results(final_results)
         
         except Exception as e:
             raise Exception(f"Error formatting CheXNet results for frontend: {str(e)}")

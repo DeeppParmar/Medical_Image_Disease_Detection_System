@@ -42,8 +42,8 @@ except ImportError:
 # CONSTANTS
 # ══════════════════════════════════════════════════════════════════════
 
-BLEND_ALPHA = 0.72       # Original image weight (keep X-ray visible)
-BLEND_BETA = 0.28        # Heatmap weight (subtle, not overpowering)
+BLEND_ALPHA = 0.78       # Original image weight (keep X-ray visible)
+BLEND_BETA = 0.22        # Heatmap weight (subtle, not overpowering)
 SMOOTH_KSIZE = 11        # Gaussian kernel for initial CAM smoothing (reduced!)
 SMOOTH_SIGMA = 4         # Gaussian sigma (lower = preserve separation)
 LUNG_MASK_THRESH = 25    # Intensity threshold for lung mask generation
@@ -51,13 +51,14 @@ LUNG_MASK_BLUR = 25      # Gaussian blur kernel for soft lung mask edges
 SOFT_THRESH_POWER = 3.0  # Power for soft thresholding (higher = sharper)
 SOFT_THRESH_KNEE = 0.35  # Knee point: below this, activations fade rapidly
 MIN_CONTOUR_AREA = 500   # Minimum pixel area for region bounding boxes
-MAX_REGIONS = 3          # Maximum number of bounding-box regions to show
+MAX_REGIONS = 2          # Maximum number of bounding-box regions to show
 BBOX_THICKNESS = 2       # Bounding box line thickness
 ASYMMETRY_BOOST = 0.15   # Boost factor for dominant-side emphasis
-CONTOUR_NOISE_AREA = 300 # Remove activation blobs smaller than this
-PERCENTILE_CUTOFF = 75   # Keep only top 25% activations
-SPREAD_POWER = 2.2       # Power compression (2.2 = reduce center dominance)
+CONTOUR_NOISE_AREA = 400 # Remove activation blobs smaller than this
+PERCENTILE_CUTOFF = 82   # Keep only top 18% activations (sharper focus)
+SPREAD_POWER = 2.5       # Power compression (2.5 = stronger center reduction)
 EDGE_DECAY_SIGMA_RATIO = 1/3  # Gaussian edge decay width ratio
+MAX_COVERAGE_RATIO = 0.50     # Reject heatmaps covering >50% of lung area
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -379,17 +380,36 @@ def _postprocess_cam(cam, target_h, target_w, orig_img=None):
         cam = cam * lung_mask
         cam = _normalize(cam)
 
-    # 5. Percentile cutoff — keep only top 25% activations
+    # 5. Percentile cutoff — keep only top 18% activations
     cam = _limit_active_area(cam)
     cam = _normalize(cam)
 
-    # 6. Power compression (2.2) — reduce center dominance
+    # 5b. Morphological opening — remove small noisy speckles after cutoff
+    cam_uint8 = (cam * 255).astype(np.uint8)
+    morph_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+    cam_uint8 = cv2.morphologyEx(cam_uint8, cv2.MORPH_OPEN, morph_kernel)
+    cam = cam_uint8.astype(np.float32) / 255.0
+    cam = _normalize(cam)
+
+    # 6. Power compression (2.5) — reduce center dominance
     cam = _compress_spread(cam)
     cam = _normalize(cam)
 
-    # 7. Connected-component region separation — keep top 3 blobs
+    # 7. Connected-component region separation — keep top 2 blobs
     cam = _isolate_top_regions(cam)
     cam = _normalize(cam)
+
+    # 7b. Coverage rejection — if heatmap covers >50% of lung area, it's
+    #     too generic to be clinically useful; dampen significantly
+    if orig_img is not None:
+        active_pixels = float((cam > 0.1).sum())
+        total_pixels = float(cam.size)
+        coverage = active_pixels / total_pixels if total_pixels > 0 else 0
+        if coverage > MAX_COVERAGE_RATIO:
+            # Aggressively narrow: raise to higher power to crush spread
+            cam = np.power(cam, 3.5)
+            cam = _normalize(cam)
+            logger.info(f"[GRADCAM++] Coverage rejection triggered: {coverage:.1%} > {MAX_COVERAGE_RATIO:.0%}, dampened")
 
     # 8. Gaussian edge decay — suppress border activations
     cam = _apply_edge_decay(cam)
