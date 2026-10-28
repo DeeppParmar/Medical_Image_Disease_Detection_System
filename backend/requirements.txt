@@ -12,3 +12,4 @@ tensorflow>=2.13.0
 pydicom>=2.4.4
 gunicorn>=21.2.0
 scipy
+pytest>=7.4.0

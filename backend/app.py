@@ -603,9 +603,11 @@ def analyze():
         logger.error("[ERROR] no_file: No image file provided")
         return jsonify({'error': 'unsupported_scan', 'message': 'No image file provided'}), 400
     
-    file = request.files.get('image') or request.files.get('file')
+    file = request.files.get('image')
+    if file is None:
+        file = request.files.get('file')
     
-    if file.filename == '':
+    if file is None or file.filename == '':
         logger.error("[ERROR] no_file: No file selected")
         return jsonify({'error': 'unsupported_scan', 'message': 'No file selected'}), 400
     
